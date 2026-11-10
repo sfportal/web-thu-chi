@@ -206,6 +206,8 @@ async function processWebhook(request, env, raw) {
       return { status: 401, p, message: 'Sai API Key webhook' };
   }
 
+  // Nút "Gửi thử" trên SePay gửi id = 0: trả thành công nhưng không ghi giao dịch
+  if (p && (p.id === 0 || p.id === '0')) return { status: 200, p, message: 'Gửi thử từ SePay: kết nối và xác thực OK (không ghi giao dịch)' };
   if (!p || !p.id || !p.transferType || p.transferAmount == null) return { status: 400, p, message: 'Thiếu trường bắt buộc (id, transferType, transferAmount)' };
 
   const r = await ingestTransaction(env, {
