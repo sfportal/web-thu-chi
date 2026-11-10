@@ -70,6 +70,7 @@
     <button data-tab="collect">Thu tiền QR</button>
     <button data-tab="cats">Danh mục &amp; quy tắc</button>
     <button data-tab="accts">Tài khoản</button>
+    <button data-tab="sepay" data-role="admin">Thiết lập SePay</button>
     <button data-tab="admin" data-role="admin">Quản trị</button>
   </nav>
   <div class="who" id="who"></div>
@@ -89,6 +90,7 @@
 
   <!-- Tổng quan -->
   <section id="tab-dash" class="tab hidden">
+    <div class="card hidden" id="setupBanner" style="background:#fef3c7;border-color:#fcd34d">Chưa kết nối xong với SePay. <a href="#" id="goSetup">Mở Thiết lập SePay</a> để nhập API Token và tạo webhook.</div>
     <div class="filters">
       <select id="dPreset">
         <option value="month">Tháng này</option><option value="lastmonth">Tháng trước</option>
@@ -192,6 +194,49 @@
     <div class="card"><h2>Lịch sử đối soát</h2><table><thead><tr><th>Bắt đầu</th><th>Kết thúc</th><th class="r">Lấy về</th><th class="r">Bổ sung</th><th>Lỗi</th></tr></thead><tbody id="slBody"></tbody></table></div>
   </section>
 
+  <!-- Thiết lập SePay -->
+  <section id="tab-sepay" class="tab hidden">
+    <div class="card"><h2>Trạng thái kết nối</h2><div id="spStatus" class="row"></div></div>
+    <div class="card">
+      <h2>Bước 1 · Chọn môi trường</h2>
+      <div class="row">
+        <label><input type="radio" name="sp_env" value="sandbox"> Test mode (giao dịch mô phỏng)</label>
+        <label><input type="radio" name="sp_env" value="production"> Production (giao dịch thật)</label>
+      </div>
+      <p class="small">Token và webhook của Test mode và Production là hai bộ riêng. Đổi môi trường thì nhập lại token và webhook tương ứng.</p>
+    </div>
+    <div class="card">
+      <h2>Bước 2 · API Token</h2>
+      <ol class="small">
+        <li>Vào <a href="https://my.sepay.vn" target="_blank" rel="noopener">my.sepay.vn</a> → <b>Cấu hình công ty</b> → <b>API Access</b> (nếu dùng Test mode, bật Test mode ở sidebar trước).</li>
+        <li>Bấm <b>+ Thêm API</b>, đặt tên (vd “Web thu chi”), trạng thái <b>Hoạt động</b>, bấm Thêm.</li>
+        <li>Sao chép token và dán vào ô dưới.</li>
+      </ol>
+      <div class="row"><input id="spToken" type="password" placeholder="Dán API Token" style="flex:1;min-width:260px" autocomplete="off"><span class="small" id="spTokenHint"></span></div>
+    </div>
+    <div class="card">
+      <h2>Bước 3 · Webhook</h2>
+      <ol class="small">
+        <li>Bấm <b>Tạo Secret Key</b> bên dưới rồi <b>Sao chép</b>.</li>
+        <li>Vào my.sepay.vn → <b>Webhooks</b> → <b>+ Thêm webhooks</b>.</li>
+        <li>Sự kiện: <b>Cả hai</b> (tiền vào và tiền ra). Chọn tài khoản ngân hàng cần theo dõi. Không bật “Chỉ gửi khi có mã thanh toán”.</li>
+        <li>URL nhận: dán URL bên dưới. Kiểu nội dung: <b>application/json</b>.</li>
+        <li>Bảo mật: chọn <b>HMAC-SHA256</b>, dán Secret Key. Bật <b>Tự động gửi lại khi server trả lỗi</b>. Lưu, rồi bấm <b>Gửi thử</b>.</li>
+      </ol>
+      <div class="form" style="max-width:none;grid-template-columns:140px 1fr">
+        <label>URL webhook</label><div class="row"><code id="spUrl"></code><button class="btn ghost" type="button" id="spCopyUrl">Sao chép</button></div>
+        <label>Xác thực</label><select id="spAuth" style="max-width:260px"><option value="hmac">HMAC-SHA256 (khuyến nghị)</option><option value="apikey">API Key</option><option value="none">Không xác thực (chỉ để thử)</option></select>
+        <label>Secret Key</label><div class="row"><input id="spSecret" placeholder="Bấm Tạo hoặc dán key đã đặt trên SePay" style="flex:1;min-width:260px" autocomplete="off"><button class="btn ghost" type="button" id="spGen">Tạo Secret Key</button><button class="btn ghost" type="button" id="spCopySecret">Sao chép</button></div>
+        <span></span><span class="small" id="spSecretHint"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Bước 4 · Lưu và kiểm tra</h2>
+      <div class="row"><button class="btn" id="spSave">Lưu thiết lập</button><button class="btn ghost" id="spTest">Kiểm tra kết nối API</button><button class="btn ghost" id="spSync">Đối soát ngay</button></div>
+      <div id="spResult" class="small" style="margin-top:10px"></div>
+    </div>
+  </section>
+
   <!-- Quản trị -->
   <section id="tab-admin" class="tab hidden">
     <div class="grid g2">
@@ -257,6 +302,8 @@ async function boot() {
   $('#who').innerHTML = `${r.sepay_env === 'sandbox' ? '<span class="env">Test mode</span> ' : ''}${esc(me.display_name || me.username)} · ${({admin:'Quản trị',editor:'Biên tập',viewer:'Chỉ xem'})[me.role]}<a id="pw">Đổi mật khẩu</a><a id="logout">Đăng xuất</a>`;
   $('#logout').onclick = async () => { await api('/logout', { method:'POST' }); showLogin(); };
   $('#pw').onclick = changePassword;
+  $('#setupBanner').classList.toggle('hidden', !(me.role === 'admin' && !r.sepay_ready));
+  $('#goSetup').onclick = (e) => { e.preventDefault(); show('sepay'); };
   $('#envInfo').textContent = `${r.sepay_env === 'sandbox' ? 'Test mode (sandbox)' : 'Production'} · xác thực webhook: ${r.webhook_auth}`;
   $('#whUrl').textContent = location.origin + '/api/sepay/webhook';
   $$('[data-role]').forEach((el) => el.classList.toggle('hidden', ROLE[me.role] < ROLE[el.dataset.role]));
@@ -279,7 +326,7 @@ $$('#nav button').forEach((b) => b.onclick = () => show(b.dataset.tab));
 function show(tab) {
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $$('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== 'tab-' + tab));
-  ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, admin:loadAdmin })[tab]();
+  ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, sepay:loadSepay, admin:loadAdmin })[tab]();
 }
 function catOptions(type, withAll) {
   const list = cats.filter((c) => !type || c.type === type);
@@ -450,6 +497,47 @@ $('#aSync').onclick = async (e) => {
   try { const r = await api('/sync', { method:'POST' }); $('#aSyncMsg').textContent = r.skipped || `Lấy ${r.fetched}, bổ sung ${r.inserted} giao dịch`; }
   catch (err) { $('#aSyncMsg').textContent = err.message; }
   e.target.disabled = false; loadAccts();
+};
+
+// ---------------------------------------------------------------- thiết lập SePay
+async function loadSepay() {
+  const c = await api('/sepay-config');
+  const badge = (ok, t) => `<span class="pill" style="background:${ok ? 'var(--in)' : '#d97706'}">${ok ? '✓' : '!'} ${t}</span>`;
+  $('#spStatus').innerHTML = badge(true, c.sepay_env === 'sandbox' ? 'Test mode' : 'Production') + badge(c.api_token_set, c.api_token_set ? 'Đã có API Token' : 'Chưa có API Token') +
+    badge(c.webhook_secret_set || c.webhook_auth === 'none', c.webhook_secret_set ? 'Đã có Secret webhook' : 'Chưa có Secret webhook') +
+    badge(!!c.last_webhook, c.last_webhook ? `Webhook gần nhất: ${c.last_webhook.txn_date}` : 'Chưa nhận webhook nào');
+  $$('input[name=sp_env]').forEach((r) => r.checked = r.value === c.sepay_env);
+  $('#spUrl').textContent = c.webhook_url;
+  $('#spAuth').value = c.webhook_auth;
+  $('#spToken').value = ''; $('#spSecret').value = '';
+  $('#spTokenHint').textContent = c.api_token_set ? `Đang lưu: ${c.api_token_hint}. Để trống nếu không đổi.` : '';
+  $('#spSecretHint').textContent = c.webhook_secret_set ? `Đang lưu: ${c.webhook_secret_hint}. Để trống nếu không đổi.` : '';
+}
+const copy = (t) => navigator.clipboard.writeText(t).then(() => toast('Đã sao chép'));
+$('#spCopyUrl').onclick = () => copy($('#spUrl').textContent);
+$('#spGen').onclick = () => { $('#spSecret').value = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join(''); };
+$('#spCopySecret').onclick = () => $('#spSecret').value ? copy($('#spSecret').value) : toast('Chưa có Secret Key mới để sao chép');
+$('#spSave').onclick = async () => {
+  const b = { sepay_env: $('input[name=sp_env]:checked')?.value, webhook_auth: $('#spAuth').value };
+  if ($('#spToken').value) b.api_token = $('#spToken').value;
+  if ($('#spSecret').value) b.webhook_secret = $('#spSecret').value;
+  await api('/sepay-config', { method:'PUT', body:b });
+  toast('Đã lưu thiết lập SePay');
+  await loadSepay();
+  const r = await api('/me');
+  $('#setupBanner').classList.toggle('hidden', r.sepay_ready);
+  const envTag = $('#who .env');
+  if (envTag) envTag.style.display = r.sepay_env === 'sandbox' ? '' : 'none';
+};
+$('#spTest').onclick = async () => {
+  $('#spResult').textContent = 'Đang kiểm tra…';
+  const r = await api('/sepay-config/test', { method:'POST' });
+  $('#spResult').innerHTML = r.ok ? `<b class="in">Kết nối thành công.</b> ${r.accounts.length} tài khoản: ` + r.accounts.map((a) => `${esc(a.bank)} ${esc(a.account_number)} (${esc(a.holder || '')}) số dư ${fmt(a.balance)}`).join('; ') : `<b class="out">${esc(r.message)}</b>`;
+};
+$('#spSync').onclick = async () => {
+  $('#spResult').textContent = 'Đang đối soát…';
+  try { const r = await api('/sync', { method:'POST' }); $('#spResult').textContent = r.skipped || `Đã lấy ${r.fetched} giao dịch trong 48 giờ qua, bổ sung ${r.inserted}.`; accounts = await api('/accounts'); fillSelects(); }
+  catch (e) { $('#spResult').textContent = e.message; }
 };
 
 // ---------------------------------------------------------------- quản trị

@@ -19,15 +19,11 @@ migrations_dir = "migrations"
 crons = ["*/30 * * * *"]
 
 [vars]
-# sandbox = Test mode (userapi-sandbox.sepay.vn), production = dữ liệu thật
+# Giá trị mặc định; chỉnh trong tab Thiết lập SePay trên giao diện
 SEPAY_ENV = "sandbox"
 # hmac (khuyến nghị) | apikey | none
 WEBHOOK_AUTH = "hmac"
 # Số giờ quét lại khi đối soát
 SYNC_LOOKBACK_HOURS = "48"
 
-# Bí mật, đặt bằng: npx wrangler secret put <TÊN>
-#   SEPAY_API_TOKEN      API Token lấy ở my.sepay.vn > Cấu hình công ty > API Access
-#   SEPAY_WEBHOOK_SECRET Secret Key HMAC (hoặc API Key) khi tạo webhook
-#   SESSION_SECRET       chuỗi ngẫu nhiên dài để ký phiên đăng nhập
-#   ADMIN_PASSWORD       mật khẩu tài khoản "admin" tạo lần đầu
+# Bí mật: chỉ cần ADMIN_PASSWORD (npx wrangler secret put ADMIN_PASSWORD).

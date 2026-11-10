@@ -23,11 +23,8 @@ npx wrangler login
 npx wrangler d1 create sepay-thuchi        # chép database_id in ra vào wrangler.toml
 npm run db:migrate                          # tạo bảng trên D1
 
-# Bí mật
-npx wrangler secret put SESSION_SECRET        # chuỗi ngẫu nhiên dài, vd: openssl rand -hex 32
-npx wrangler secret put ADMIN_PASSWORD        # mật khẩu tài khoản "admin" đầu tiên
-npx wrangler secret put SEPAY_API_TOKEN       # my.sepay.vn > Cấu hình công ty > API Access
-npx wrangler secret put SEPAY_WEBHOOK_SECRET  # Secret Key HMAC đặt khi tạo webhook
+# Bí mật duy nhất cần đặt: mật khẩu tài khoản "admin" đầu tiên
+npx wrangler secret put ADMIN_PASSWORD
 
 npm run deploy
 ```
@@ -35,12 +32,14 @@ npm run deploy
 Sau khi deploy:
 
 1. Mở `https://<worker>.workers.dev`, đăng nhập `admin` với `ADMIN_PASSWORD`. Đổi mật khẩu, thêm người dùng ở tab **Quản trị**.
-2. Trên my.sepay.vn → **Webhooks** → Thêm webhook: URL `https://<worker>.workers.dev/api/sepay/webhook`, kiểu xác thực **HMAC-SHA256** với cùng Secret Key, bật “Tự động gửi lại khi server trả lỗi”.
+2. Vào tab **Thiết lập SePay** và làm theo 4 bước trên màn hình: chọn Test mode hoặc Production, dán API Token, tạo Secret Key rồi khai báo webhook trên my.sepay.vn, bấm **Kiểm tra kết nối API**.
 3. Muốn dùng QR thu tiền: khai báo tiền tố mã (mặc định `TT`) ở my.sepay.vn → Cấu hình công ty → Cấu trúc mã thanh toán, và nhập STK nhận tiền ở tab **Quản trị**.
+
+Token và Secret nhập trên giao diện được lưu trong D1, không bao giờ trả về trình duyệt (chỉ hiện 4 ký tự cuối). Nếu muốn, vẫn có thể đặt bằng `wrangler secret put SEPAY_API_TOKEN` / `SEPAY_WEBHOOK_SECRET`; giá trị nhập trên giao diện được ưu tiên.
 
 ### Test mode trước, thật sau
 
-`wrangler.toml` mặc định `SEPAY_ENV = "sandbox"` (dùng `userapi-sandbox.sepay.vn` và token tạo trong Test mode của my.sepay.vn). Thử với giao dịch mô phỏng xong, đổi thành `SEPAY_ENV = "production"`, đặt lại `SEPAY_API_TOKEN` bằng token thật, trỏ webhook Live về cùng URL rồi `npm run deploy`.
+Ở tab **Thiết lập SePay**, chọn Test mode để dùng `userapi-sandbox.sepay.vn` và token tạo trong Test mode của my.sepay.vn. Thử với giao dịch mô phỏng xong, chuyển sang Production, dán token thật và tạo webhook Live trỏ về cùng URL.
 
 ## Chạy thử trên máy
 

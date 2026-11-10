@@ -27,6 +27,27 @@ export default {
   },
 };
 
+// Cấu hình SePay: ưu tiên giá trị nhập ở trang Thiết lập SePay (lưu D1), sau đó tới biến môi trường
+async function cfg(env) {
+  if (env._cfg) return env._cfg;
+  const rows = (await env.DB.prepare("SELECT key, value FROM settings WHERE key IN ('sepay_api_token','sepay_webhook_secret','sepay_env','webhook_auth','session_secret')").all()).results;
+  const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  let sessionSecret = env.SESSION_SECRET || s.session_secret;
+  if (!sessionSecret) {
+    sessionSecret = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    await env.DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('session_secret', ?)").bind(sessionSecret).run();
+    sessionSecret = (await env.DB.prepare("SELECT value FROM settings WHERE key='session_secret'").first()).value;
+  }
+  env._cfg = {
+    apiToken: s.sepay_api_token || env.SEPAY_API_TOKEN || '',
+    webhookSecret: s.sepay_webhook_secret || env.SEPAY_WEBHOOK_SECRET || '',
+    sepayEnv: s.sepay_env || env.SEPAY_ENV || 'sandbox',
+    webhookAuth: s.webhook_auth || env.WEBHOOK_AUTH || 'hmac',
+    sessionSecret,
+  };
+  return env._cfg;
+}
+
 class HttpError extends Error {
   constructor(status, message) {
     super(message);
@@ -64,7 +85,11 @@ async function handleApi(request, env, ctx, url) {
     if (origin && origin !== url.origin) throw new HttpError(403, 'Sai nguồn gọi');
   }
 
-  if (p === '/api/me') return json({ user, sepay_env: env.SEPAY_ENV || 'sandbox', webhook_auth: env.WEBHOOK_AUTH || 'hmac' });
+  if (p === '/api/me') { const c = await cfg(env); return json({ user, sepay_env: c.sepayEnv, webhook_auth: c.webhookAuth, sepay_ready: !!(c.apiToken && (c.webhookSecret || c.webhookAuth === 'none')) }); }
+
+  if (p === '/api/sepay-config' && m === 'GET') { need('admin'); return json(await sepayConfigView(env, url)); }
+  if (p === '/api/sepay-config' && m === 'PUT') { need('admin'); return saveSepayConfig(env, await body(request), url); }
+  if (p === '/api/sepay-config/test' && m === 'POST') { need('admin'); return json(await testSepay(env)); }
 
   if (p === '/api/summary' && m === 'GET') return summary(env, url);
 
@@ -130,8 +155,9 @@ const run = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).run();
 // ---------------------------------------------------------------- webhook
 async function handleWebhook(request, env) {
   const raw = await request.text();
-  const mode = env.WEBHOOK_AUTH || 'hmac';
-  const secret = env.SEPAY_WEBHOOK_SECRET || '';
+  const c = await cfg(env);
+  const mode = c.webhookAuth;
+  const secret = c.webhookSecret;
 
   if (mode === 'hmac') {
     const sig = request.headers.get('x-sepay-signature') || '';
@@ -297,8 +323,9 @@ async function createPaymentRequest(env, b, user) {
 
 // ---------------------------------------------------------------- đối soát SePay API v2
 export async function syncFromSepay(env) {
-  if (!env.SEPAY_API_TOKEN) return { skipped: 'Chưa đặt SEPAY_API_TOKEN' };
-  const base = env.SEPAY_API_BASE || SEPAY_BASE[env.SEPAY_ENV] || SEPAY_BASE.sandbox;
+  const c = await cfg(env);
+  if (!c.apiToken) return { skipped: 'Chưa nhập API Token SePay ở tab Thiết lập SePay' };
+  const base = env.SEPAY_API_BASE || SEPAY_BASE[c.sepayEnv] || SEPAY_BASE.sandbox;
   const log = await run(env, `INSERT INTO sync_log (started_at) VALUES (datetime('now'))`);
   const logId = log.meta.last_row_id;
   let fetched = 0, inserted = 0;
@@ -352,7 +379,7 @@ async function sepayGet(env, base, path, params) {
   const u = new URL(base + path);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
   for (let attempt = 0; attempt < 5; attempt++) {
-    const r = await fetch(u, { headers: { Authorization: `Bearer ${env.SEPAY_API_TOKEN}`, 'Content-Type': 'application/json' } });
+    const r = await fetch(u, { headers: { Authorization: `Bearer ${(await cfg(env)).apiToken}`, 'Content-Type': 'application/json' } });
     if (r.status === 429) {
       const wait = Number(r.headers.get('retry-after') || 1);
       await sleep(Math.min(wait, 10) * 1000);
@@ -488,13 +515,60 @@ async function saveRule(env, b) {
 const SETTING_KEYS = ['qr_account', 'qr_bank', 'qr_holder', 'qr_store', 'payment_prefix', 'company_name'];
 async function getSettings(env) {
   const rows = await all(env, 'SELECT key, value FROM settings');
-  return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  // Chỉ trả cài đặt hiển thị, không bao giờ trả token / secret
+  return Object.fromEntries(rows.filter((r) => SETTING_KEYS.includes(r.key)).map((r) => [r.key, r.value]));
 }
 async function saveSettings(env, b) {
   const stmts = SETTING_KEYS.filter((k) => k in b).map((k) =>
     env.DB.prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(k, String(b[k] ?? '')));
   if (stmts.length) await env.DB.batch(stmts);
   return json(await getSettings(env));
+}
+
+// ---------------------------------------------------------------- thiết lập SePay
+const mask = (v) => (v ? '••••' + String(v).slice(-4) : '');
+async function sepayConfigView(env, url) {
+  const c = await cfg(env);
+  return {
+    sepay_env: c.sepayEnv,
+    webhook_auth: c.webhookAuth,
+    api_token_set: !!c.apiToken,
+    api_token_hint: mask(c.apiToken),
+    webhook_secret_set: !!c.webhookSecret,
+    webhook_secret_hint: mask(c.webhookSecret),
+    webhook_url: `${url.origin}/api/sepay/webhook`,
+    api_base: env.SEPAY_API_BASE || SEPAY_BASE[c.sepayEnv] || SEPAY_BASE.sandbox,
+    last_webhook: await first(env, "SELECT txn_date, amount, type, created_at FROM transactions WHERE source='webhook' ORDER BY id DESC LIMIT 1"),
+  };
+}
+async function saveSepayConfig(env, b, url) {
+  const stmts = [];
+  const put = (k, v) => stmts.push(env.DB.prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(k, v));
+  if (b.sepay_env) { if (!['sandbox', 'production'].includes(b.sepay_env)) throw new HttpError(400, 'Môi trường không hợp lệ'); put('sepay_env', b.sepay_env); }
+  if (b.webhook_auth) { if (!['hmac', 'apikey', 'none'].includes(b.webhook_auth)) throw new HttpError(400, 'Kiểu xác thực không hợp lệ'); put('webhook_auth', b.webhook_auth); }
+  if (b.api_token) {
+    const t = String(b.api_token).trim();
+    if (!/^[A-Za-z0-9]{20,128}$/.test(t)) throw new HttpError(400, 'API Token không đúng định dạng (chuỗi chữ và số, thường 64 ký tự)');
+    put('sepay_api_token', t);
+  }
+  if (b.webhook_secret) {
+    const w = String(b.webhook_secret).trim();
+    if (w.length < 16) throw new HttpError(400, 'Secret Key nên dài ít nhất 16 ký tự');
+    put('sepay_webhook_secret', w);
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  env._cfg = null;
+  return json(await sepayConfigView(env, url));
+}
+async function testSepay(env) {
+  const c = await cfg(env);
+  if (!c.apiToken) return { ok: false, message: 'Chưa nhập API Token' };
+  const base = env.SEPAY_API_BASE || SEPAY_BASE[c.sepayEnv] || SEPAY_BASE.sandbox;
+  const r = await fetch(`${base}/bank-accounts?per_page=100`, { headers: { Authorization: `Bearer ${c.apiToken}` } });
+  if (r.status === 401) return { ok: false, message: `Token bị từ chối (401). Kiểm tra token có đúng môi trường ${c.sepayEnv === 'sandbox' ? 'Test mode' : 'Production'} không.` };
+  if (!r.ok) return { ok: false, message: `SePay trả HTTP ${r.status}` };
+  const d = await r.json();
+  return { ok: true, accounts: (d.data || []).map((a) => ({ bank: a.bank_short_name, account_number: a.account_number, holder: a.account_holder_name, balance: a.accumulated })) };
 }
 
 // ---------------------------------------------------------------- người dùng & phiên
@@ -564,14 +638,15 @@ function timingSafeEqual(a, b) {
   return diff === 0;
 }
 async function signSession(env, payload) {
-  if (!env.SESSION_SECRET) throw new HttpError(500, 'Chưa đặt SESSION_SECRET');
+  const { sessionSecret } = await cfg(env);
   const data = b64u(JSON.stringify(payload));
-  return `${data}.${await hmacHex(env.SESSION_SECRET, data)}`;
+  return `${data}.${await hmacHex(sessionSecret, data)}`;
 }
 async function verifySession(env, token) {
   const [data, sig] = token.split('.');
-  if (!data || !sig || !env.SESSION_SECRET) return null;
-  if (!timingSafeEqual(await hmacHex(env.SESSION_SECRET, data), sig)) return null;
+  if (!data || !sig) return null;
+  const { sessionSecret } = await cfg(env);
+  if (!timingSafeEqual(await hmacHex(sessionSecret, data), sig)) return null;
   try { return JSON.parse(unb64u(data)); } catch { return null; }
 }
 async function pbkdf2(password, salt, iterations) {

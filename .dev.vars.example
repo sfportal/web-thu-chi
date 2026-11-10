@@ -1,3 +1,1 @@
-SESSION_SECRET=dev-session-secret-change-me-0123456789
 ADMIN_PASSWORD=admin12345
-SEPAY_WEBHOOK_SECRET=dev-webhook-secret
