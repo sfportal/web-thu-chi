@@ -1,0 +1,17 @@
+{
+  "name": "web-thu-chi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Webtool quản lý thu chi tự động từ SePay (Cloudflare Workers + D1)",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:migrate:local": "wrangler d1 migrations apply sepay-thuchi --local",
+    "db:migrate": "wrangler d1 migrations apply sepay-thuchi --remote",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

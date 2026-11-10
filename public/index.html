@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thu chi SePay</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --in:#16a34a; --out:#dc2626; --brand:#0f766e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--brand); color:#fff; padding:10px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  nav { display:flex; gap:4px; flex-wrap:wrap; }
+  nav button { background:transparent; color:#d1fae5; border:0; padding:6px 12px; border-radius:6px; cursor:pointer; font:inherit; }
+  nav button.on, nav button:hover { background:rgba(255,255,255,.15); color:#fff; }
+  .who { margin-left:auto; font-size:13px; opacity:.9; }
+  .who a { color:#fff; margin-left:8px; cursor:pointer; text-decoration:underline; }
+  main { padding:20px; max-width:1280px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; }
+  .grid { display:grid; gap:16px; }
+  .g4 { grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); }
+  .g2 { grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); }
+  .stat .lbl { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  .stat .val { font-size:24px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .in { color:var(--in); } .out { color:var(--out); }
+  .bar { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:13px; }
+  .bar .name { width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bar .track { flex:1; background:#f1f5f9; border-radius:4px; height:12px; overflow:hidden; }
+  .bar .fill { height:100%; border-radius:4px; }
+  .bar .num { width:110px; text-align:right; font-variant-numeric:tabular-nums; }
+  .months { display:flex; align-items:flex-end; gap:10px; height:180px; padding-top:10px; overflow-x:auto; }
+  .month { display:flex; flex-direction:column; align-items:center; min-width:46px; height:100%; }
+  .month .cols { flex:1; display:flex; align-items:flex-end; gap:3px; }
+  .month .c { width:16px; border-radius:3px 3px 0 0; }
+  .month .m { font-size:11px; color:var(--muted); margin-top:4px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  td.r, th.r { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .content { max-width:380px; word-break:break-word; }
+  .small { font-size:12px; color:var(--muted); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; color:#fff; white-space:nowrap; }
+  .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  input, select, textarea { font:inherit; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; }
+  button.btn { font:inherit; padding:6px 14px; border-radius:6px; border:1px solid var(--brand); background:var(--brand); color:#fff; cursor:pointer; }
+  button.btn.ghost { background:#fff; color:var(--brand); }
+  button.btn.danger { background:#fff; color:var(--out); border-color:var(--out); }
+  button.btn:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .form { display:grid; grid-template-columns:140px 1fr; gap:8px 12px; align-items:center; max-width:560px; }
+  .pager { display:flex; gap:8px; align-items:center; justify-content:flex-end; margin-top:10px; }
+  .hidden { display:none !important; }
+  #login { max-width:340px; margin:12vh auto; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#0f172a; color:#fff; padding:10px 16px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  dialog { border:0; border-radius:12px; padding:20px; max-width:520px; width:95%; }
+  dialog::backdrop { background:rgba(15,23,42,.4); }
+  .qr img { width:260px; max-width:100%; border:1px solid var(--line); border-radius:8px; }
+  .env { background:#fef3c7; color:#92400e; border-radius:999px; padding:1px 10px; font-size:12px; }
+  @media (max-width:700px) { .form { grid-template-columns:1fr; } .bar .name { width:35%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Thu chi SePay</h1>
+  <nav id="nav" class="hidden">
+    <button data-tab="dash" class="on">Tổng quan</button>
+    <button data-tab="txns">Giao dịch</button>
+    <button data-tab="collect">Thu tiền QR</button>
+    <button data-tab="cats">Danh mục &amp; quy tắc</button>
+    <button data-tab="accts">Tài khoản</button>
+    <button data-tab="admin" data-role="admin">Quản trị</button>
+  </nav>
+  <div class="who" id="who"></div>
+</header>
+
+<main>
+  <!-- Đăng nhập -->
+  <section id="login" class="card hidden">
+    <h2>Đăng nhập</h2>
+    <form id="loginForm" class="grid" style="gap:10px">
+      <input name="username" placeholder="Tên đăng nhập" autocomplete="username" required>
+      <input name="password" type="password" placeholder="Mật khẩu" autocomplete="current-password" required>
+      <button class="btn">Đăng nhập</button>
+      <div class="small" id="loginErr"></div>
+    </form>
+  </section>
+
+  <!-- Tổng quan -->
+  <section id="tab-dash" class="tab hidden">
+    <div class="filters">
+      <select id="dPreset">
+        <option value="month">Tháng này</option><option value="lastmonth">Tháng trước</option>
+        <option value="quarter">Quý này</option><option value="year" selected>Năm nay</option><option value="all">Toàn bộ</option><option value="custom">Tùy chọn</option>
+      </select>
+      <input type="date" id="dFrom"> <input type="date" id="dTo">
+      <select id="dAccount"><option value="">Mọi tài khoản</option></select>
+      <span class="small" id="dSync"></span>
+    </div>
+    <div class="grid g4">
+      <div class="card stat"><div class="lbl">Tổng thu</div><div class="val in" id="sIn">–</div></div>
+      <div class="card stat"><div class="lbl">Tổng chi</div><div class="val out" id="sOut">–</div></div>
+      <div class="card stat"><div class="lbl">Chênh lệch</div><div class="val" id="sNet">–</div></div>
+      <div class="card stat"><div class="lbl">Chờ thu (QR)</div><div class="val" id="sPend">–</div><div class="small" id="sUncat"></div></div>
+    </div>
+    <div class="card"><h2>Thu chi theo tháng</h2><div class="months" id="months"></div>
+      <div class="small"><span class="pill" style="background:var(--in)">Thu</span> <span class="pill" style="background:var(--out)">Chi</span></div></div>
+    <div class="grid g2">
+      <div class="card"><h2>Thu theo danh mục</h2><div id="catIn"></div></div>
+      <div class="card"><h2>Chi theo danh mục</h2><div id="catOut"></div></div>
+    </div>
+    <div class="card"><h2>Số dư tài khoản</h2><div id="balances"></div></div>
+  </section>
+
+  <!-- Giao dịch -->
+  <section id="tab-txns" class="tab hidden">
+    <div class="card">
+      <div class="filters">
+        <input id="tQ" placeholder="Tìm nội dung, mã, ghi chú…" style="min-width:220px">
+        <select id="tType"><option value="">Thu &amp; chi</option><option value="in">Thu</option><option value="out">Chi</option></select>
+        <select id="tCat"></select>
+        <select id="tAccount"><option value="">Mọi tài khoản</option></select>
+        <input type="date" id="tFrom"> <input type="date" id="tTo">
+        <button class="btn ghost" id="tExport">Xuất Excel (CSV)</button>
+        <button class="btn" id="tAdd" data-role="editor">+ Nhập tay</button>
+      </div>
+      <div class="small" id="tSum"></div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Ngày</th><th>Nội dung</th><th>Danh mục</th><th>Tag / ghi chú</th><th class="r">Thu</th><th class="r">Chi</th><th>Tài khoản</th></tr></thead>
+        <tbody id="tBody"></tbody>
+      </table></div>
+      <div class="pager"><button class="btn ghost" id="tPrev">‹</button><span id="tPage"></span><button class="btn ghost" id="tNext">›</button></div>
+    </div>
+  </section>
+
+  <!-- Thu tiền QR -->
+  <section id="tab-collect" class="tab hidden">
+    <div class="grid g2">
+      <div class="card" data-role="editor">
+        <h2>Tạo yêu cầu thu tiền</h2>
+        <form id="prForm" class="form">
+          <label>Số tiền (đ)</label><input name="amount" type="number" min="1000" step="1000" required>
+          <label>Khách hàng</label><input name="customer" placeholder="VD: HTX Ea Kiết">
+          <label>Nội dung</label><input name="description" placeholder="VD: Phí MSVT đợt 1">
+          <label>Danh mục thu</label><select name="category_id" id="prCat"></select>
+          <span></span><button class="btn">Tạo mã QR</button>
+        </form>
+        <p class="small">Mã thanh toán có dạng <b id="prPrefix">TT</b>123456. Cần khai báo cùng tiền tố ở my.sepay.vn → Cấu hình công ty → Cấu trúc mã thanh toán để SePay bóc tách mã. Khi tiền về đủ, yêu cầu tự chuyển sang “Đã thu”.</p>
+      </div>
+      <div class="card qr hidden" id="prResult"></div>
+    </div>
+    <div class="card"><h2>Danh sách yêu cầu</h2><div style="overflow-x:auto"><table>
+      <thead><tr><th>Mã</th><th>Khách hàng</th><th>Nội dung</th><th class="r">Số tiền</th><th class="r">Đã thu</th><th>Trạng thái</th><th>Tạo lúc</th><th></th></tr></thead>
+      <tbody id="prBody"></tbody></table></div></div>
+  </section>
+
+  <!-- Danh mục & quy tắc -->
+  <section id="tab-cats" class="tab hidden">
+    <div class="grid g2">
+      <div class="card"><h2>Danh mục</h2>
+        <table><thead><tr><th>Tên</th><th>Loại</th><th></th></tr></thead><tbody id="cBody"></tbody></table>
+        <form id="cForm" class="row" style="margin-top:12px" data-role="editor">
+          <input name="name" placeholder="Tên danh mục" required>
+          <select name="type"><option value="in">Thu</option><option value="out">Chi</option></select>
+          <input name="color" type="color" value="#0f766e">
+          <button class="btn">Thêm</button>
+        </form>
+      </div>
+      <div class="card"><h2>Quy tắc tự phân loại</h2>
+        <p class="small">Giao dịch mới được so với từ khoá trong nội dung chuyển khoản (không phân biệt dấu, hoa thường). Ngăn nhiều từ khoá bằng dấu |. Quy tắc có độ ưu tiên nhỏ được xét trước.</p>
+        <table><thead><tr><th>Từ khoá</th><th>Chiều</th><th>Danh mục</th><th>Tag</th><th>Ưu tiên</th><th></th></tr></thead><tbody id="rBody"></tbody></table>
+        <form id="rForm" class="row" style="margin-top:12px" data-role="editor">
+          <input name="pattern" placeholder="VD: msvt|ma vung" required style="flex:1;min-width:140px">
+          <select name="transfer_type"><option value="any">Cả hai</option><option value="in">Thu</option><option value="out">Chi</option></select>
+          <select name="category_id" id="rCat" required></select>
+          <input name="tag" placeholder="Tag (tuỳ chọn)" style="width:120px">
+          <input name="priority" type="number" value="100" style="width:70px">
+          <button class="btn">Thêm</button>
+        </form>
+        <div class="row" style="margin-top:12px" data-role="editor"><button class="btn ghost" id="rApply">Áp dụng lại cho giao dịch cũ</button><span class="small">Không đụng tới giao dịch đã phân loại tay.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tài khoản -->
+  <section id="tab-accts" class="tab hidden">
+    <div class="card"><h2>Tài khoản ngân hàng liên kết SePay</h2>
+      <table><thead><tr><th>Ngân hàng</th><th>Số tài khoản</th><th>Chủ tài khoản</th><th>Nhãn</th><th class="r">Số dư</th><th>Giao dịch cuối</th></tr></thead><tbody id="aBody"></tbody></table>
+      <div class="row" style="margin-top:12px" data-role="admin"><button class="btn" id="aSync">Đối soát ngay với SePay</button><span class="small" id="aSyncMsg"></span></div>
+    </div>
+    <div class="card"><h2>Lịch sử đối soát</h2><table><thead><tr><th>Bắt đầu</th><th>Kết thúc</th><th class="r">Lấy về</th><th class="r">Bổ sung</th><th>Lỗi</th></tr></thead><tbody id="slBody"></tbody></table></div>
+  </section>
+
+  <!-- Quản trị -->
+  <section id="tab-admin" class="tab hidden">
+    <div class="grid g2">
+      <div class="card"><h2>Cài đặt</h2>
+        <form id="sForm" class="form">
+          <label>Tên công ty</label><input name="company_name">
+          <label>STK nhận tiền QR</label><input name="qr_account">
+          <label>Ngân hàng</label><input name="qr_bank" placeholder="VD: Vietcombank, BIDV, MBBank">
+          <label>Chủ tài khoản</label><input name="qr_holder" placeholder="Viết không dấu">
+          <label>Tên hiển thị</label><input name="qr_store">
+          <label>Tiền tố mã TT</label><input name="payment_prefix" maxlength="5" placeholder="TT">
+          <span></span><button class="btn">Lưu</button>
+        </form>
+        <p class="small">Webhook URL để khai báo ở my.sepay.vn → Webhooks: <code id="whUrl"></code><br>Chế độ: <span id="envInfo"></span></p>
+      </div>
+      <div class="card"><h2>Người dùng</h2>
+        <table><thead><tr><th>Tên</th><th>Hiển thị</th><th>Quyền</th><th>Hoạt động</th><th></th></tr></thead><tbody id="uBody"></tbody></table>
+        <form id="uForm" class="row" style="margin-top:12px">
+          <input name="username" placeholder="tên đăng nhập" required style="width:130px">
+          <input name="display_name" placeholder="Tên hiển thị" style="width:130px">
+          <input name="password" type="password" placeholder="Mật khẩu ≥ 8 ký tự" required style="width:150px">
+          <select name="role"><option value="viewer">Chỉ xem</option><option value="editor">Biên tập</option><option value="admin">Quản trị</option></select>
+          <button class="btn">Thêm</button>
+        </form>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg"></dialog>
+<div id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const fmt = (n) => (Number(n) || 0).toLocaleString('vi-VN');
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const ROLE = { viewer:1, editor:2, admin:3 };
+let me = null, cats = [], accounts = [], settings = {}, tPage = 1;
+
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600); }
+async function api(path, opts = {}) {
+  const r = await fetch('/api' + path, { ...opts, headers: { 'content-type': 'application/json', ...(opts.headers || {}) }, body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body });
+  if (r.status === 401 && path !== '/login') { showLogin(); throw new Error('Chưa đăng nhập'); }
+  const data = r.headers.get('content-type')?.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) { const m = data.error || data.message || 'Lỗi ' + r.status; toast(m); throw new Error(m); }
+  return data;
+}
+const ymd = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+
+// ---------------------------------------------------------------- phiên
+function showLogin() { $('#login').classList.remove('hidden'); $('#nav').classList.add('hidden'); $$('.tab').forEach((t) => t.classList.add('hidden')); $('#who').textContent = ''; }
+$('#loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try { await api('/login', { method:'POST', body:{ username:f.get('username'), password:f.get('password') } }); boot(); }
+  catch (err) { $('#loginErr').textContent = err.message; }
+};
+async function boot() {
+  const r = await api('/me');
+  me = r.user;
+  $('#login').classList.add('hidden'); $('#nav').classList.remove('hidden');
+  $('#who').innerHTML = `${r.sepay_env === 'sandbox' ? '<span class="env">Test mode</span> ' : ''}${esc(me.display_name || me.username)} · ${({admin:'Quản trị',editor:'Biên tập',viewer:'Chỉ xem'})[me.role]}<a id="pw">Đổi mật khẩu</a><a id="logout">Đăng xuất</a>`;
+  $('#logout').onclick = async () => { await api('/logout', { method:'POST' }); showLogin(); };
+  $('#pw').onclick = changePassword;
+  $('#envInfo').textContent = `${r.sepay_env === 'sandbox' ? 'Test mode (sandbox)' : 'Production'} · xác thực webhook: ${r.webhook_auth}`;
+  $('#whUrl').textContent = location.origin + '/api/sepay/webhook';
+  $$('[data-role]').forEach((el) => el.classList.toggle('hidden', ROLE[me.role] < ROLE[el.dataset.role]));
+  [cats, accounts, settings] = await Promise.all([api('/categories'), api('/accounts'), api('/settings')]);
+  fillSelects();
+  setPreset('year');
+  show('dash');
+}
+function changePassword() {
+  const d = $('#dlg');
+  d.innerHTML = `<h2 style="margin-top:0">Đổi mật khẩu</h2><form class="form" method="dialog" id="pwf">
+    <label>Mật khẩu cũ</label><input name="old_password" type="password" required><label>Mật khẩu mới</label><input name="new_password" type="password" minlength="8" required>
+    <span></span><div class="row"><button class="btn">Lưu</button><button class="btn ghost" value="cancel" formnovalidate>Huỷ</button></div></form>`;
+  d.showModal();
+  $('#pwf').onsubmit = async (e) => { if (e.submitter?.value === 'cancel') return; e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); await api('/password', { method:'POST', body:f }); d.close(); toast('Đã đổi mật khẩu'); };
+}
+
+// ---------------------------------------------------------------- điều hướng
+$$('#nav button').forEach((b) => b.onclick = () => show(b.dataset.tab));
+function show(tab) {
+  $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
+  $$('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== 'tab-' + tab));
+  ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, admin:loadAdmin })[tab]();
+}
+function catOptions(type, withAll) {
+  const list = cats.filter((c) => !type || c.type === type);
+  return (withAll ? '<option value="">Mọi danh mục</option><option value="none">Chưa phân loại</option>' : '<option value="">— Chưa phân loại —</option>') +
+    list.map((c) => `<option value="${c.id}">${c.type === 'in' ? 'Thu' : 'Chi'} · ${esc(c.name)}</option>`).join('');
+}
+function fillSelects() {
+  $('#tCat').innerHTML = catOptions(null, true);
+  $('#prCat').innerHTML = catOptions('in');
+  $('#rCat').innerHTML = catOptions(null).replace('<option value="">— Chưa phân loại —</option>', '');
+  const ao = '<option value="">Mọi tài khoản</option>' + accounts.map((a) => `<option value="${esc(a.account_number)}">${esc(a.bank || '')} ${esc(a.account_number)}</option>`).join('') + '<option value="TIEN_MAT">Tiền mặt</option>';
+  $('#dAccount').innerHTML = ao; $('#tAccount').innerHTML = ao;
+  $('#prPrefix').textContent = (settings.payment_prefix || 'TT').toUpperCase();
+}
+
+// ---------------------------------------------------------------- tổng quan
+function setPreset(p) {
+  const now = new Date(); let from = null, to = now;
+  if (p === 'month') from = new Date(now.getFullYear(), now.getMonth(), 1);
+  if (p === 'lastmonth') { from = new Date(now.getFullYear(), now.getMonth() - 1, 1); to = new Date(now.getFullYear(), now.getMonth(), 0); }
+  if (p === 'quarter') from = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+  if (p === 'year') from = new Date(now.getFullYear(), 0, 1);
+  $('#dPreset').value = p;
+  if (p !== 'custom') { $('#dFrom').value = from ? ymd(from) : ''; $('#dTo').value = p === 'all' ? '' : ymd(to); }
+}
+$('#dPreset').onchange = (e) => { setPreset(e.target.value); loadDash(); };
+['#dFrom', '#dTo', '#dAccount'].forEach((s) => $(s).onchange = () => { if (s !== '#dAccount') $('#dPreset').value = 'custom'; loadDash(); });
+function bars(rows, max) {
+  if (!rows.length) return '<div class="small">Chưa có dữ liệu</div>';
+  return rows.map((r) => `<div class="bar"><span class="name" title="${esc(r.name)}">${esc(r.name)}</span><span class="track"><span class="fill" style="display:block;width:${Math.max(1, r.total / max * 100)}%;background:${esc(r.color)}"></span></span><span class="num">${fmt(r.total)}</span></div>`).join('');
+}
+async function loadDash() {
+  const q = new URLSearchParams({ from:$('#dFrom').value, to:$('#dTo').value, account:$('#dAccount').value });
+  const s = await api('/summary?' + q);
+  const { tin, tout, uncategorized } = s.totals;
+  $('#sIn').textContent = fmt(tin); $('#sOut').textContent = fmt(tout);
+  const net = tin - tout; $('#sNet').textContent = (net > 0 ? '+' : '') + fmt(net); $('#sNet').className = 'val ' + (net >= 0 ? 'in' : 'out');
+  $('#sPend').textContent = fmt(s.pending.total);
+  $('#sUncat').innerHTML = `${s.pending.n} yêu cầu chờ thu · <a href="#" id="goUncat">${uncategorized || 0} giao dịch chưa phân loại</a>`;
+  $('#goUncat').onclick = (e) => { e.preventDefault(); $('#tCat').value = 'none'; $('#tFrom').value = $('#dFrom').value; $('#tTo').value = $('#dTo').value; show('txns'); };
+  const mx = Math.max(1, ...s.byMonth.map((m) => Math.max(m.tin, m.tout)));
+  $('#months').innerHTML = s.byMonth.length ? s.byMonth.map((m) => `<div class="month" title="${m.month}: thu ${fmt(m.tin)} · chi ${fmt(m.tout)}"><div class="cols">
+    <div class="c" style="height:${m.tin / mx * 150}px;background:var(--in)"></div><div class="c" style="height:${m.tout / mx * 150}px;background:var(--out)"></div></div><div class="m">${m.month.slice(5)}/${m.month.slice(2, 4)}</div></div>`).join('') : '<div class="small">Chưa có dữ liệu</div>';
+  const ci = s.byCategory.filter((c) => c.type === 'in'), co = s.byCategory.filter((c) => c.type === 'out');
+  $('#catIn').innerHTML = bars(ci, Math.max(1, ...ci.map((c) => c.total)));
+  $('#catOut').innerHTML = bars(co, Math.max(1, ...co.map((c) => c.total)));
+  $('#balances').innerHTML = s.accounts.length ? `<table><tr><th>Ngân hàng</th><th>Số tài khoản</th><th>Nhãn</th><th class="r">Số dư</th><th>Cập nhật</th></tr>${s.accounts.map((a) =>
+    `<tr><td>${esc(a.bank)}</td><td>${esc(a.account_number)}</td><td>${esc(a.label || a.holder || '')}</td><td class="r">${a.balance == null ? '–' : fmt(a.balance)}</td><td class="small">${esc(a.last_transaction || '')}</td></tr>`).join('')}</table>` : '<div class="small">Chưa có tài khoản. Tài khoản xuất hiện sau giao dịch đầu tiên hoặc lần đối soát đầu.</div>';
+  $('#dSync').textContent = s.lastSync ? `Đối soát gần nhất: ${s.lastSync.started_at} UTC${s.lastSync.error ? ' (lỗi)' : ''}` : '';
+}
+
+// ---------------------------------------------------------------- giao dịch
+function txnQuery() { return new URLSearchParams({ q:$('#tQ').value, type:$('#tType').value, category:$('#tCat').value, account:$('#tAccount').value, from:$('#tFrom').value, to:$('#tTo').value }); }
+let tTimer;
+$('#tQ').oninput = () => { clearTimeout(tTimer); tTimer = setTimeout(() => { tPage = 1; loadTxns(); }, 300); };
+['#tType', '#tCat', '#tAccount', '#tFrom', '#tTo'].forEach((s) => $(s).onchange = () => { tPage = 1; loadTxns(); });
+$('#tPrev').onclick = () => { if (tPage > 1) { tPage--; loadTxns(); } };
+$('#tNext').onclick = () => { tPage++; loadTxns(); };
+$('#tExport').onclick = () => { location.href = '/api/export.csv?' + txnQuery(); };
+$('#tAdd').onclick = () => editTxn(null);
+async function loadTxns() {
+  const q = txnQuery(); q.set('page', tPage); q.set('per_page', 50);
+  const r = await api('/transactions?' + q);
+  const pages = Math.max(1, Math.ceil(r.total / r.per_page));
+  if (tPage > pages) { tPage = pages; return loadTxns(); }
+  $('#tSum').innerHTML = `${fmt(r.total)} giao dịch · Thu <b class="in">${fmt(r.sum_in)}</b> · Chi <b class="out">${fmt(r.sum_out)}</b>`;
+  $('#tPage').textContent = `Trang ${tPage}/${pages}`;
+  $('#tBody').innerHTML = r.data.map((t) => `<tr data-id="${t.id}" style="cursor:${ROLE[me.role] >= 2 ? 'pointer' : 'default'}">
+    <td class="small" style="white-space:nowrap">${esc(t.txn_date.slice(0, 16))}${t.source === 'manual' ? '<br>nhập tay' : ''}</td>
+    <td class="content">${esc(t.content)}${t.code ? `<br><span class="small">Mã: ${esc(t.code)}</span>` : ''}</td>
+    <td>${t.category_name ? `<span class="pill" style="background:${esc(t.category_color)}">${esc(t.category_name)}</span>` : '<span class="small">Chưa phân loại</span>'}</td>
+    <td class="small">${esc(t.tag || '')}${t.note ? '<br>' + esc(t.note) : ''}</td>
+    <td class="r in">${t.type === 'in' ? fmt(t.amount) : ''}</td><td class="r out">${t.type === 'out' ? fmt(t.amount) : ''}</td>
+    <td class="small">${esc(t.bank || '')}<br>${esc(t.account_number || '')}</td></tr>`).join('') || '<tr><td colspan="7" class="small">Không có giao dịch</td></tr>';
+  window._txns = Object.fromEntries(r.data.map((t) => [t.id, t]));
+  if (ROLE[me.role] >= 2) $$('#tBody tr[data-id]').forEach((tr) => tr.onclick = () => editTxn(window._txns[tr.dataset.id]));
+}
+function editTxn(t) {
+  const manual = !t || t.source === 'manual';
+  const d = $('#dlg');
+  d.innerHTML = `<h2 style="margin-top:0">${t ? 'Sửa giao dịch' : 'Nhập giao dịch tay'}</h2>
+  ${t && !manual ? `<p class="small">${esc(t.txn_date)} · ${t.type === 'in' ? 'Thu' : 'Chi'} <b>${fmt(t.amount)}</b> · ${esc(t.bank || '')} ${esc(t.account_number || '')}<br>${esc(t.content)}${t.reference_code ? '<br>Mã tham chiếu: ' + esc(t.reference_code) : ''}</p>` : ''}
+  <form class="form" id="tf">
+    ${manual ? `<label>Loại</label><select name="type"><option value="out">Chi</option><option value="in">Thu</option></select>
+    <label>Số tiền (đ)</label><input name="amount" type="number" min="1" required>
+    <label>Ngày giờ</label><input name="txn_date" type="datetime-local" required>
+    <label>Nội dung</label><input name="content" required>` : ''}
+    <label>Danh mục</label><select name="category_id">${catOptions(null)}</select>
+    <label>Tag</label><input name="tag" placeholder="dự án, khách hàng…">
+    <label>Ghi chú</label><input name="note">
+    <span></span><div class="row"><button class="btn">Lưu</button><button class="btn ghost" type="button" id="tfc">Huỷ</button>${t && manual ? '<button class="btn danger" type="button" id="tfd">Xoá</button>' : ''}</div>
+  </form>`;
+  const f = $('#tf');
+  if (t) { for (const k of ['type', 'amount', 'content', 'category_id', 'tag', 'note']) if (f[k]) f[k].value = t[k] ?? ''; if (f.txn_date) f.txn_date.value = t.txn_date.replace(' ', 'T').slice(0, 16); }
+  else f.txn_date.value = ymd(new Date()) + 'T' + new Date().toTimeString().slice(0, 5);
+  d.showModal();
+  $('#tfc').onclick = () => d.close();
+  if ($('#tfd')) $('#tfd').onclick = async () => { if (!confirm('Xoá giao dịch nhập tay này?')) return; await api('/transactions/' + t.id, { method:'DELETE' }); d.close(); toast('Đã xoá'); loadTxns(); };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const b = Object.fromEntries(new FormData(f)); b.category_id = b.category_id ? Number(b.category_id) : null;
+    if (t) await api('/transactions/' + t.id, { method:'PATCH', body:b }); else await api('/transactions', { method:'POST', body:b });
+    d.close(); toast('Đã lưu'); loadTxns();
+  };
+}
+
+// ---------------------------------------------------------------- thu tiền QR
+function qrUrl(pr) {
+  const acc = pr.account_number || settings.qr_account, bank = pr.bank || settings.qr_bank;
+  if (!acc || !bank) return null;
+  const q = new URLSearchParams({ acc, bank, amount:pr.amount, des:pr.code, template:'compact', showinfo:'true' });
+  if (settings.qr_holder) q.set('holder', settings.qr_holder);
+  if (settings.qr_store) q.set('store', settings.qr_store);
+  return 'https://vietqr.app/img?' + q;
+}
+function showQr(pr) {
+  const u = qrUrl(pr), box = $('#prResult');
+  box.classList.remove('hidden');
+  box.innerHTML = `<h2>Mã ${esc(pr.code)} · ${fmt(pr.amount)} đ</h2>${u ? `<img src="${esc(u)}" alt="QR thanh toán"><p class="small">Nội dung chuyển khoản phải có <b>${esc(pr.code)}</b>.</p>
+    <div class="row"><a class="btn ghost" style="text-decoration:none" href="${esc(u)}&download=true" target="_blank">Tải ảnh QR</a><button class="btn ghost" id="cpq">Sao chép link</button></div>`
+    : '<p class="small">Chưa cài STK và ngân hàng nhận tiền ở tab Quản trị.</p>'}`;
+  if (u) $('#cpq').onclick = () => navigator.clipboard.writeText(u).then(() => toast('Đã sao chép'));
+}
+$('#prForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const b = Object.fromEntries(new FormData(e.target)); b.category_id = b.category_id ? Number(b.category_id) : null;
+  const pr = await api('/payment-requests', { method:'POST', body:b });
+  e.target.reset(); showQr(pr); loadCollect();
+};
+async function loadCollect() {
+  const rows = await api('/payment-requests');
+  const st = { pending:'<span class="pill" style="background:#d97706">Chờ thu</span>', paid:'<span class="pill" style="background:var(--in)">Đã thu</span>', cancelled:'<span class="pill" style="background:#94a3b8">Đã huỷ</span>' };
+  $('#prBody').innerHTML = rows.map((r) => `<tr><td><a href="#" data-qr="${r.id}">${esc(r.code)}</a></td><td>${esc(r.customer || '')}</td><td>${esc(r.description || '')}</td>
+    <td class="r">${fmt(r.amount)}</td><td class="r">${fmt(r.paid_amount)}</td><td>${st[r.status]}</td><td class="small">${esc(r.created_at)}</td>
+    <td>${r.status === 'pending' && ROLE[me.role] >= 2 ? `<button class="btn ghost" data-cancel="${r.id}">Huỷ</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="small">Chưa có yêu cầu</td></tr>';
+  $$('[data-qr]').forEach((a) => a.onclick = (e) => { e.preventDefault(); showQr(rows.find((r) => r.id == a.dataset.qr)); });
+  $$('[data-cancel]').forEach((b) => b.onclick = async () => { await api('/payment-requests/' + b.dataset.cancel, { method:'PATCH', body:{ status:'cancelled' } }); loadCollect(); });
+}
+
+// ---------------------------------------------------------------- danh mục & quy tắc
+async function loadCats() {
+  cats = await api('/categories'); fillSelects();
+  const rules = await api('/rules');
+  const ed = ROLE[me.role] >= 2;
+  $('#cBody').innerHTML = cats.map((c) => `<tr><td><span class="pill" style="background:${esc(c.color)}">${esc(c.name)}</span></td><td>${c.type === 'in' ? 'Thu' : 'Chi'}</td>
+    <td>${ed ? `<button class="btn ghost" data-ren="${c.id}">Sửa</button> <button class="btn danger" data-delc="${c.id}">Xoá</button>` : ''}</td></tr>`).join('');
+  const cname = (id) => cats.find((c) => c.id === id)?.name || '–';
+  $('#rBody').innerHTML = rules.map((r) => `<tr><td><code>${esc(r.pattern)}</code></td><td>${({ any:'Cả hai', in:'Thu', out:'Chi' })[r.transfer_type]}</td><td>${esc(cname(r.category_id))}</td><td>${esc(r.tag || '')}</td><td>${r.priority}</td>
+    <td>${ed ? `<button class="btn danger" data-delr="${r.id}">Xoá</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="small">Chưa có quy tắc</td></tr>';
+  $$('[data-delc]').forEach((b) => b.onclick = async () => { if (!confirm('Xoá danh mục? Giao dịch thuộc danh mục sẽ thành chưa phân loại.')) return; await api('/categories/' + b.dataset.delc, { method:'DELETE' }); loadCats(); });
+  $$('[data-ren]').forEach((b) => b.onclick = async () => { const c = cats.find((x) => x.id == b.dataset.ren); const n = prompt('Tên mới', c.name); if (n) { await api('/categories/' + c.id, { method:'PUT', body:{ ...c, name:n } }); loadCats(); } });
+  $$('[data-delr]').forEach((b) => b.onclick = async () => { await api('/rules/' + b.dataset.delr, { method:'DELETE' }); loadCats(); });
+}
+$('#cForm').onsubmit = async (e) => { e.preventDefault(); await api('/categories', { method:'POST', body:Object.fromEntries(new FormData(e.target)) }); e.target.reset(); loadCats(); };
+$('#rForm').onsubmit = async (e) => { e.preventDefault(); const b = Object.fromEntries(new FormData(e.target)); b.category_id = Number(b.category_id); await api('/rules', { method:'POST', body:b }); e.target.reset(); loadCats(); };
+$('#rApply').onclick = async () => { const r = await api('/rules/apply', { method:'POST' }); toast(`Đã quét ${r.scanned}, phân loại ${r.categorized} giao dịch`); };
+
+// ---------------------------------------------------------------- tài khoản
+async function loadAccts() {
+  accounts = await api('/accounts');
+  $('#aBody').innerHTML = accounts.map((a) => `<tr><td>${esc(a.bank)}</td><td>${esc(a.account_number)}</td><td>${esc(a.holder || '')}</td><td>${esc(a.label || '')}</td>
+    <td class="r">${a.balance == null ? '–' : fmt(a.balance)}</td><td class="small">${esc(a.last_transaction || '')}</td></tr>`).join('') || '<tr><td colspan="6" class="small">Chưa có tài khoản</td></tr>';
+  const log = await api('/sync-log');
+  $('#slBody').innerHTML = log.map((l) => `<tr><td class="small">${esc(l.started_at)}</td><td class="small">${esc(l.finished_at || '')}</td><td class="r">${l.fetched}</td><td class="r">${l.inserted}</td><td class="small out">${esc(l.error || '')}</td></tr>`).join('') || '<tr><td colspan="5" class="small">Chưa chạy lần nào</td></tr>';
+}
+$('#aSync').onclick = async (e) => {
+  e.target.disabled = true; $('#aSyncMsg').textContent = 'Đang đối soát…';
+  try { const r = await api('/sync', { method:'POST' }); $('#aSyncMsg').textContent = r.skipped || `Lấy ${r.fetched}, bổ sung ${r.inserted} giao dịch`; }
+  catch (err) { $('#aSyncMsg').textContent = err.message; }
+  e.target.disabled = false; loadAccts();
+};
+
+// ---------------------------------------------------------------- quản trị
+async function loadAdmin() {
+  settings = await api('/settings');
+  const f = $('#sForm'); for (const k of ['company_name', 'qr_account', 'qr_bank', 'qr_holder', 'qr_store', 'payment_prefix']) f[k].value = settings[k] || '';
+  const users = await api('/users');
+  $('#uBody').innerHTML = users.map((u) => `<tr><td>${esc(u.username)}</td><td>${esc(u.display_name || '')}</td>
+    <td><select data-urole="${u.id}">${['viewer', 'editor', 'admin'].map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${({ viewer:'Chỉ xem', editor:'Biên tập', admin:'Quản trị' })[r]}</option>`).join('')}</select></td>
+    <td><input type="checkbox" data-uact="${u.id}" ${u.active ? 'checked' : ''}></td><td><button class="btn ghost" data-upw="${u.id}">Đặt lại MK</button></td></tr>`).join('');
+  const save = (u, extra) => api('/users/' + u.id, { method:'PUT', body:{ display_name:u.display_name, role:u.role, active:u.active, ...extra } }).then(() => { toast('Đã lưu'); loadAdmin(); });
+  $$('[data-urole]').forEach((s) => s.onchange = () => save(users.find((u) => u.id == s.dataset.urole), { role:s.value }));
+  $$('[data-uact]').forEach((c) => c.onchange = () => save(users.find((u) => u.id == c.dataset.uact), { active:c.checked ? 1 : 0 }));
+  $$('[data-upw]').forEach((b) => b.onclick = () => { const p = prompt('Mật khẩu mới (≥ 8 ký tự)'); if (p) save(users.find((u) => u.id == b.dataset.upw), { password:p }); });
+}
+$('#sForm').onsubmit = async (e) => { e.preventDefault(); settings = await api('/settings', { method:'PUT', body:Object.fromEntries(new FormData(e.target)) }); fillSelects(); toast('Đã lưu cài đặt'); };
+$('#uForm').onsubmit = async (e) => { e.preventDefault(); await api('/users', { method:'POST', body:Object.fromEntries(new FormData(e.target)) }); e.target.reset(); loadAdmin(); };
+
+boot().catch(() => showLogin());
+</script>
+</body>
+</html>

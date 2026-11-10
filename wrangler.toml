@@ -1,0 +1,33 @@
+name = "sepay-thuchi"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+# Giao diện web (thư mục public) được phục vụ cùng Worker
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sepay-thuchi"
+database_id = "00000000-0000-0000-0000-000000000000" # THAY bằng ID in ra khi chạy: npx wrangler d1 create sepay-thuchi
+migrations_dir = "migrations"
+
+# Đối soát với SePay API mỗi 30 phút
+[triggers]
+crons = ["*/30 * * * *"]
+
+[vars]
+# sandbox = Test mode (userapi-sandbox.sepay.vn), production = dữ liệu thật
+SEPAY_ENV = "sandbox"
+# hmac (khuyến nghị) | apikey | none
+WEBHOOK_AUTH = "hmac"
+# Số giờ quét lại khi đối soát
+SYNC_LOOKBACK_HOURS = "48"
+
+# Bí mật, đặt bằng: npx wrangler secret put <TÊN>
+#   SEPAY_API_TOKEN      API Token lấy ở my.sepay.vn > Cấu hình công ty > API Access
+#   SEPAY_WEBHOOK_SECRET Secret Key HMAC (hoặc API Key) khi tạo webhook
+#   SESSION_SECRET       chuỗi ngẫu nhiên dài để ký phiên đăng nhập
+#   ADMIN_PASSWORD       mật khẩu tài khoản "admin" tạo lần đầu
