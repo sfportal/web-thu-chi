@@ -27,25 +27,27 @@ export default {
   },
 };
 
-// Cấu hình SePay: ưu tiên giá trị nhập ở trang Thiết lập SePay (lưu D1), sau đó tới biến môi trường
+// Session secret: lấy từ biến môi trường hoặc tự sinh và lưu D1
 async function cfg(env) {
   if (env._cfg) return env._cfg;
-  const rows = (await env.DB.prepare("SELECT key, value FROM settings WHERE key IN ('sepay_api_token','sepay_webhook_secret','sepay_env','webhook_auth','session_secret')").all()).results;
-  const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-  let sessionSecret = env.SESSION_SECRET || s.session_secret;
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key='session_secret'").first();
+  let sessionSecret = env.SESSION_SECRET || row?.value;
   if (!sessionSecret) {
     sessionSecret = toHex(crypto.getRandomValues(new Uint8Array(32)));
     await env.DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('session_secret', ?)").bind(sessionSecret).run();
     sessionSecret = (await env.DB.prepare("SELECT value FROM settings WHERE key='session_secret'").first()).value;
   }
-  env._cfg = {
-    apiToken: s.sepay_api_token || env.SEPAY_API_TOKEN || '',
-    webhookSecret: s.sepay_webhook_secret || env.SEPAY_WEBHOOK_SECRET || '',
-    sepayEnv: s.sepay_env || env.SEPAY_ENV || 'sandbox',
-    webhookAuth: s.webhook_auth || env.WEBHOOK_AUTH || 'hmac',
-    sessionSecret,
-  };
+  env._cfg = { sessionSecret };
   return env._cfg;
+}
+
+// ---------------------------------------------------------------- kết nối SePay
+const connBase = (env, c) => env.SEPAY_API_BASE || SEPAY_BASE[c.sepay_env] || SEPAY_BASE.production;
+async function listConnections(env, activeOnly = false) {
+  return all(env, `SELECT * FROM sepay_connections ${activeOnly ? 'WHERE active=1' : ''} ORDER BY id`);
+}
+async function getConnection(env, id) {
+  return first(env, 'SELECT * FROM sepay_connections WHERE id=?', id);
 }
 
 class HttpError extends Error {
@@ -67,8 +69,12 @@ async function handleApi(request, env, ctx, url) {
   const p = url.pathname;
   const m = request.method;
 
-  // Webhook SePay: công khai, tự xác thực bằng chữ ký
-  if (p === '/api/sepay/webhook' && m === 'POST') return handleWebhook(request, env);
+  // Webhook SePay: công khai, tự xác thực bằng chữ ký. /api/sepay/webhook (không số) = kết nối đầu tiên
+  let wm;
+  if (m === 'POST' && (wm = p.match(/^\/api\/sepay\/webhook(?:\/(\d+))?$/))) return handleWebhook(request, env, wm[1] ? Number(wm[1]) : null);
+
+  // API cho bên thứ 3, xác thực bằng API key
+  if (p.startsWith('/api/v1/')) return handleV1(request, env, url);
 
   if (p === '/api/login' && m === 'POST') return login(request, env);
   if (p === '/api/logout' && m === 'POST')
@@ -85,23 +91,43 @@ async function handleApi(request, env, ctx, url) {
     if (origin && origin !== url.origin) throw new HttpError(403, 'Sai nguồn gọi');
   }
 
-  if (p === '/api/me') { const c = await cfg(env); return json({ user, sepay_env: c.sepayEnv, webhook_auth: c.webhookAuth, sepay_ready: !!(c.apiToken && (c.webhookSecret || c.webhookAuth === 'none')) }); }
+  const scope = user.scope;
+  if (p === '/api/me') {
+    const conns = await listConnections(env, true);
+    const ready = conns.some((c) => c.api_token && (c.webhook_secret || c.webhook_auth === 'none'));
+    const sandbox = conns.length > 0 && conns.every((c) => c.sepay_env === 'sandbox');
+    return json({ user, sepay_ready: ready, sepay_env: sandbox ? 'sandbox' : 'production', connections: conns.length });
+  }
 
-  if (p === '/api/sepay-config' && m === 'GET') { need('admin'); return json(await sepayConfigView(env, url)); }
-  if (p === '/api/sepay-config' && m === 'PUT') { need('admin'); return saveSepayConfig(env, await body(request), url); }
-  if (p === '/api/sepay-config/test' && m === 'POST') { need('admin'); return json(await testSepay(env)); }
-
-  if (p === '/api/summary' && m === 'GET') return summary(env, url);
-
-  if (p === '/api/transactions' && m === 'GET') return listTransactions(env, url);
-  if (p === '/api/transactions' && m === 'POST') { need('editor'); return createManual(env, await body(request), user); }
   let mm;
+  if (p === '/api/connections' && m === 'GET') { need('admin'); return json(await connectionsView(env, url)); }
+  if (p === '/api/connections' && m === 'POST') { need('admin'); return saveConnection(env, await body(request), url); }
+  if ((mm = p.match(/^\/api\/connections\/(\d+)(\/test|\/sync)?$/))) {
+    need('admin');
+    const id = Number(mm[1]);
+    if (mm[2] === '/test' && m === 'POST') return json(await testConnection(env, id));
+    if (mm[2] === '/sync' && m === 'POST') return json(await syncFromSepay(env, id));
+    if (!mm[2] && m === 'PUT') return saveConnection(env, { ...(await body(request)), id }, url);
+  }
+
+  if (p === '/api/api-keys' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT id, name, key_prefix, scopes, accounts, active, created_by, created_at, last_used_at FROM api_keys ORDER BY id DESC')); }
+  if (p === '/api/api-keys' && m === 'POST') { need('admin'); return createApiKey(env, await body(request), user); }
+  if ((mm = p.match(/^\/api\/api-keys\/(\d+)$/))) {
+    need('admin');
+    if (m === 'PATCH') { const b = await body(request); await run(env, 'UPDATE api_keys SET active=? WHERE id=?', b.active ? 1 : 0, Number(mm[1])); return json({ ok: true }); }
+    if (m === 'DELETE') { await run(env, 'DELETE FROM api_keys WHERE id=?', Number(mm[1])); return json({ ok: true }); }
+  }
+
+  if (p === '/api/summary' && m === 'GET') return summary(env, url, scope);
+
+  if (p === '/api/transactions' && m === 'GET') return listTransactions(env, url, scope);
+  if (p === '/api/transactions' && m === 'POST') { need('editor'); return createManual(env, await body(request), user); }
   if ((mm = p.match(/^\/api\/transactions\/(\d+)$/))) {
     const id = Number(mm[1]);
     if (m === 'PATCH') { need('editor'); return updateTransaction(env, id, await body(request), user); }
     if (m === 'DELETE') { need('editor'); return deleteTransaction(env, id); }
   }
-  if (p === '/api/export.csv' && m === 'GET') return exportCsv(env, url);
+  if (p === '/api/export.csv' && m === 'GET') return exportCsv(env, url, scope);
 
   if (p === '/api/categories' && m === 'GET') return json(await all(env, 'SELECT * FROM categories ORDER BY type, sort, name'));
   if (p === '/api/categories' && m === 'POST') { need('editor'); return saveCategory(env, await body(request)); }
@@ -120,12 +146,19 @@ async function handleApi(request, env, ctx, url) {
     if (m === 'DELETE') { await run(env, 'DELETE FROM rules WHERE id=?', Number(mm[1])); return json({ ok: true }); }
   }
 
-  if (p === '/api/accounts' && m === 'GET') return json(await all(env, 'SELECT * FROM bank_accounts ORDER BY bank, account_number'));
+  if (p === '/api/accounts' && m === 'GET') return json(await listAccounts(env, scope));
   if (p === '/api/sync' && m === 'POST') { need('admin'); return json(await syncFromSepay(env)); }
-  if (p === '/api/webhook-log' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT * FROM webhook_log ORDER BY id DESC LIMIT 30')); }
-  if (p === '/api/sync-log' && m === 'GET') return json(await all(env, 'SELECT * FROM sync_log ORDER BY id DESC LIMIT 20'));
+  if (p === '/api/webhook-log' && m === 'GET') {
+    need('admin');
+    const cid = url.searchParams.get('connection');
+    return json(cid ? await all(env, 'SELECT * FROM webhook_log WHERE connection_id=? ORDER BY id DESC LIMIT 30', Number(cid)) : await all(env, 'SELECT * FROM webhook_log ORDER BY id DESC LIMIT 30'));
+  }
+  if (p === '/api/sync-log' && m === 'GET') { need('editor'); return json(await all(env, 'SELECT l.*, c.name connection_name FROM sync_log l LEFT JOIN sepay_connections c ON c.id=l.connection_id ORDER BY l.id DESC LIMIT 20')); }
 
-  if (p === '/api/payment-requests' && m === 'GET') return json(await all(env, 'SELECT * FROM payment_requests ORDER BY id DESC LIMIT 500'));
+  if (p === '/api/payment-requests' && m === 'GET') {
+    const sc = scopeSql('account_number', scope);
+    return json(await all(env, `SELECT * FROM payment_requests ${sc.sql ? 'WHERE ' + sc.sql : ''} ORDER BY id DESC LIMIT 500`, ...sc.args));
+  }
   if (p === '/api/payment-requests' && m === 'POST') { need('editor'); return createPaymentRequest(env, await body(request), user); }
   if ((mm = p.match(/^\/api\/payment-requests\/(\d+)$/)) && m === 'PATCH') {
     need('editor');
@@ -138,7 +171,11 @@ async function handleApi(request, env, ctx, url) {
   if (p === '/api/settings' && m === 'GET') return json(await getSettings(env));
   if (p === '/api/settings' && m === 'PUT') { need('admin'); return saveSettings(env, await body(request)); }
 
-  if (p === '/api/users' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT id, username, display_name, role, active, created_at FROM users ORDER BY id')); }
+  if (p === '/api/users' && m === 'GET') {
+    need('admin');
+    return json(await all(env, `SELECT u.id, u.username, u.display_name, u.role, u.active, u.created_at, GROUP_CONCAT(a.account_number) accounts
+      FROM users u LEFT JOIN user_accounts a ON a.user_id=u.id GROUP BY u.id ORDER BY u.id`));
+  }
   if (p === '/api/users' && m === 'POST') { need('admin'); return saveUser(env, await body(request)); }
   if ((mm = p.match(/^\/api\/users\/(\d+)$/)) && m === 'PUT') { need('admin'); return saveUser(env, { ...(await body(request)), id: Number(mm[1]) }); }
   if (p === '/api/password' && m === 'POST') return changePassword(env, user, await body(request));
@@ -154,19 +191,23 @@ const first = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).first();
 const run = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).run();
 
 // ---------------------------------------------------------------- webhook
-async function handleWebhook(request, env) {
+async function handleWebhook(request, env, connId) {
   const raw = await request.text();
   let res;
+  let conn = null;
   try {
-    res = await processWebhook(request, env, raw);
+    conn = connId ? await getConnection(env, connId) : await first(env, 'SELECT * FROM sepay_connections WHERE active=1 ORDER BY id LIMIT 1');
+    if (!conn) res = { status: 404, message: connId ? `Không có kết nối SePay số ${connId}` : 'Chưa tạo kết nối SePay nào' };
+    else if (!conn.active) res = { status: 410, message: `Kết nối "${conn.name}" đang ngưng` };
+    else res = await processWebhook(request, env, raw, conn);
   } catch (e) {
     res = { status: 500, message: 'Lỗi xử lý: ' + (e.message || e) };
   }
   // Ghi nhật ký mọi lần gọi, kể cả thất bại, để xem ở tab Thiết lập SePay
   try {
     await env.DB.batch([
-      env.DB.prepare('INSERT INTO webhook_log (status, message, sepay_id, amount, transfer_type, ip) VALUES (?,?,?,?,?,?)')
-        .bind(res.status, res.message || null, res.p?.id != null ? String(res.p.id) : null,
+      env.DB.prepare('INSERT INTO webhook_log (connection_id, status, message, sepay_id, amount, transfer_type, ip) VALUES (?,?,?,?,?,?,?)')
+        .bind(conn?.id ?? connId ?? null, res.status, res.message || null, res.p?.id != null ? String(res.p.id) : null,
           res.p?.transferAmount != null ? Number(res.p.transferAmount) : null, res.p?.transferType || null,
           request.headers.get('cf-connecting-ip') || null),
       env.DB.prepare('DELETE FROM webhook_log WHERE id <= (SELECT MAX(id) - 1000 FROM webhook_log)'),
@@ -176,10 +217,9 @@ async function handleWebhook(request, env) {
   return json({ success: false, message: res.message }, res.status);
 }
 
-async function processWebhook(request, env, raw) {
-  const c = await cfg(env);
-  const mode = c.webhookAuth;
-  const secret = c.webhookSecret;
+async function processWebhook(request, env, raw, conn) {
+  const mode = conn.webhook_auth;
+  const secret = conn.webhook_secret || '';
 
   let p = null;
   const ct = request.headers.get('content-type') || '';
@@ -212,6 +252,7 @@ async function processWebhook(request, env, raw) {
 
   const r = await ingestTransaction(env, {
     source: 'webhook',
+    connection_id: conn.id,
     sepay_webhook_id: Number(p.id),
     reference_code: p.referenceCode || null,
     account_number: p.accountNumber || null,
@@ -262,11 +303,11 @@ export async function ingestTransaction(env, t) {
   const rules = await activeRules(env);
   const hit = matchRule(rules, t);
   const res = await env.DB.prepare(
-    `INSERT OR IGNORE INTO transactions (source, sepay_webhook_id, sepay_uuid, reference_code, account_number, bank, txn_date, type, amount,
+    `INSERT OR IGNORE INTO transactions (source, connection_id, sepay_webhook_id, sepay_uuid, reference_code, account_number, bank, txn_date, type, amount,
       content, description, code, sub_account, accumulated, category_id, tag, note, categorized_by, created_by)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(
-    t.source, t.sepay_webhook_id ?? null, t.sepay_uuid ?? null, t.reference_code ?? null, t.account_number ?? null, t.bank ?? null,
+    t.source, t.connection_id ?? null, t.sepay_webhook_id ?? null, t.sepay_uuid ?? null, t.reference_code ?? null, t.account_number ?? null, t.bank ?? null,
     t.txn_date, t.type, t.amount, t.content ?? null, t.description ?? null, t.code ?? null, t.sub_account ?? null,
     t.accumulated ?? null, t.category_id ?? hit?.category_id ?? null, t.tag ?? hit?.tag ?? null, t.note ?? null,
     t.category_id ? 'user' : hit ? 'rule' : null, t.created_by ?? null
@@ -276,10 +317,11 @@ export async function ingestTransaction(env, t) {
   if (t.source !== 'manual' && t.type === 'in') await matchPaymentRequest(env, id, t);
   if (t.account_number && t.accumulated) {
     await run(env,
-      `INSERT INTO bank_accounts (account_number, bank, balance, last_transaction) VALUES (?,?,?,?)
+      `INSERT INTO bank_accounts (account_number, bank, balance, last_transaction, connection_id) VALUES (?,?,?,?,?)
        ON CONFLICT(account_number) DO UPDATE SET balance=CASE WHEN IFNULL(last_transaction,'')<=excluded.last_transaction THEN excluded.balance ELSE balance END,
-         last_transaction=MAX(IFNULL(last_transaction,''), excluded.last_transaction), bank=IFNULL(bank, excluded.bank)`,
-      t.account_number, t.bank, t.accumulated, t.txn_date);
+         last_transaction=MAX(IFNULL(last_transaction,''), excluded.last_transaction), bank=IFNULL(bank, excluded.bank),
+         connection_id=IFNULL(connection_id, excluded.connection_id)`,
+      t.account_number, t.bank, t.accumulated, t.txn_date, t.connection_id ?? null);
   }
   return { id, duplicate: false };
 }
@@ -345,42 +387,55 @@ async function createPaymentRequest(env, b, user) {
     const c = prefix + String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0');
     if (!(await first(env, 'SELECT 1 FROM payment_requests WHERE code=?', c))) code = c;
   }
+  const accNo = b.account_number || s.qr_account || null;
+  let bank = b.bank || (accNo && accNo === s.qr_account ? s.qr_bank : null);
+  if (!bank && accNo) bank = (await first(env, 'SELECT bank FROM bank_accounts WHERE account_number=?', accNo))?.bank || null;
   await run(env, `INSERT INTO payment_requests (code, amount, customer, description, account_number, bank, category_id, created_by) VALUES (?,?,?,?,?,?,?,?)`,
-    code, amount, b.customer || null, b.description || null, b.account_number || s.qr_account || null, b.bank || s.qr_bank || null,
+    code, amount, b.customer || null, b.description || null, accNo, bank,
     b.category_id || null, user.username);
   return json(await first(env, 'SELECT * FROM payment_requests WHERE code=?', code));
 }
 
 // ---------------------------------------------------------------- đối soát SePay API v2
-export async function syncFromSepay(env) {
-  const c = await cfg(env);
-  if (!c.apiToken) return { skipped: 'Chưa nhập API Token SePay ở tab Thiết lập SePay' };
-  const base = env.SEPAY_API_BASE || SEPAY_BASE[c.sepayEnv] || SEPAY_BASE.sandbox;
-  const log = await run(env, `INSERT INTO sync_log (started_at) VALUES (datetime('now'))`);
+export async function syncFromSepay(env, onlyId = null) {
+  const conns = (await listConnections(env, true)).filter((c) => c.api_token && (!onlyId || c.id === onlyId));
+  if (!conns.length) return { skipped: onlyId ? 'Kết nối chưa có API Token hoặc đang ngưng' : 'Chưa có kết nối SePay nào có API Token' };
+  const result = { fetched: 0, inserted: 0, connections: [] };
+  for (const c of conns) {
+    const r = await syncConnection(env, c);
+    result.fetched += r.fetched; result.inserted += r.inserted;
+    result.connections.push({ id: c.id, name: c.name, ...r });
+  }
+  return result;
+}
+
+async function syncConnection(env, conn) {
+  const base = connBase(env, conn);
+  const log = await run(env, `INSERT INTO sync_log (started_at, connection_id) VALUES (datetime('now'), ?)`, conn.id);
   const logId = log.meta.last_row_id;
   let fetched = 0, inserted = 0;
   try {
-    // Tài khoản ngân hàng + số dư
     for (let page = 1; page <= 10; page++) {
-      const r = await sepayGet(env, base, '/bank-accounts', { page, per_page: 100 });
+      const r = await sepayGet(conn.api_token, base, '/bank-accounts', { page, per_page: 100 });
       for (const a of r.data || []) {
-        await run(env, `INSERT INTO bank_accounts (account_number, sepay_id, bank, holder, label, balance, last_transaction, synced_at)
-          VALUES (?,?,?,?,?,?,?,datetime('now')) ON CONFLICT(account_number) DO UPDATE SET sepay_id=excluded.sepay_id, bank=excluded.bank,
-          holder=excluded.holder, label=excluded.label, balance=excluded.balance, last_transaction=excluded.last_transaction, synced_at=excluded.synced_at`,
-          a.account_number, a.id, a.bank_short_name, a.account_holder_name, a.label, a.accumulated, a.last_transaction);
+        await run(env, `INSERT INTO bank_accounts (account_number, sepay_id, bank, holder, label, balance, last_transaction, synced_at, connection_id)
+          VALUES (?,?,?,?,?,?,?,datetime('now'),?) ON CONFLICT(account_number) DO UPDATE SET sepay_id=excluded.sepay_id, bank=excluded.bank,
+          holder=excluded.holder, label=excluded.label, balance=excluded.balance, last_transaction=excluded.last_transaction, synced_at=excluded.synced_at,
+          connection_id=excluded.connection_id`,
+          a.account_number, a.id, a.bank_short_name, a.account_holder_name, a.label, a.accumulated, a.last_transaction, conn.id);
       }
       if (!r.meta?.pagination?.has_more) break;
     }
-    // Giao dịch trong N giờ gần nhất
     const hours = Number(env.SYNC_LOOKBACK_HOURS || 48);
     const from = vnNow(-hours * 3600 * 1000);
     for (let page = 1; page <= 200; page++) {
-      const r = await sepayGet(env, base, '/transactions', { transaction_date_from: from, transaction_date_sort: 'asc', per_page: 100, page });
+      const r = await sepayGet(conn.api_token, base, '/transactions', { transaction_date_from: from, transaction_date_sort: 'asc', per_page: 100, page });
       for (const x of r.data || []) {
         fetched++;
         const type = x.transfer_type === 'out' || (x.amount_out > 0 && !x.amount_in) ? 'out' : 'in';
         const res = await ingestTransaction(env, {
           source: 'api',
+          connection_id: conn.id,
           sepay_uuid: x.id,
           reference_code: x.reference_number || null,
           account_number: x.account_number || null,
@@ -398,23 +453,27 @@ export async function syncFromSepay(env) {
       if (!r.meta?.pagination?.has_more) break;
     }
     await run(env, `UPDATE sync_log SET finished_at=datetime('now'), fetched=?, inserted=? WHERE id=?`, fetched, inserted, logId);
+    await run(env, `UPDATE sepay_connections SET last_sync_at=datetime('now'), last_sync_error=NULL WHERE id=?`, conn.id);
     return { fetched, inserted };
   } catch (e) {
-    await run(env, `UPDATE sync_log SET finished_at=datetime('now'), fetched=?, inserted=?, error=? WHERE id=?`, fetched, inserted, String(e.message || e), logId);
-    throw e;
+    const msg = String(e.message || e);
+    await run(env, `UPDATE sync_log SET finished_at=datetime('now'), fetched=?, inserted=?, error=? WHERE id=?`, fetched, inserted, msg, logId);
+    await run(env, `UPDATE sepay_connections SET last_sync_at=datetime('now'), last_sync_error=? WHERE id=?`, msg, conn.id);
+    return { fetched, inserted, error: msg };
   }
 }
 
-async function sepayGet(env, base, path, params) {
+async function sepayGet(token, base, path, params) {
   const u = new URL(base + path);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
   for (let attempt = 0; attempt < 5; attempt++) {
-    const r = await fetch(u, { headers: { Authorization: `Bearer ${(await cfg(env)).apiToken}`, 'Content-Type': 'application/json' } });
+    const r = await fetch(u, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
     if (r.status === 429) {
       const wait = Number(r.headers.get('retry-after') || 1);
       await sleep(Math.min(wait, 10) * 1000);
       continue;
     }
+    if (r.status === 401) throw new Error('SePay từ chối API Token (401): token sai, đã bị xoá hoặc khác môi trường Test mode/Production');
     if (!r.ok) throw new Error(`SePay ${path} HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
     await sleep(350); // giới hạn 3 request/giây
     return r.json();
@@ -423,11 +482,28 @@ async function sepayGet(env, base, path, params) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------------------------------------------------------- phạm vi tài khoản
+// scope = mảng số tài khoản được phép xem; null = tất cả
+function scopeSql(col, scope) {
+  if (!scope) return { sql: '', args: [] };
+  if (!scope.length) return { sql: '1=0', args: [] };
+  return { sql: `${col} IN (${scope.map(() => '?').join(',')})`, args: scope };
+}
+async function listAccounts(env, scope) {
+  const sc = scopeSql('a.account_number', scope);
+  return all(env, `SELECT a.*, c.name connection_name FROM bank_accounts a LEFT JOIN sepay_connections c ON c.id=a.connection_id
+    ${sc.sql ? 'WHERE ' + sc.sql : ''} ORDER BY a.bank, a.account_number`, ...sc.args);
+}
+
 // ---------------------------------------------------------------- giao dịch
-function txnFilters(url) {
+function txnFilters(url, scope = null) {
   const q = url.searchParams;
   const where = [];
   const args = [];
+  const sc = scopeSql('t.account_number', scope);
+  if (sc.sql) { where.push(sc.sql); args.push(...sc.args); }
+  if (q.get('connection')) { where.push('t.connection_id = ?'); args.push(Number(q.get('connection'))); }
+  if (q.get('since_id')) { where.push('t.id > ?'); args.push(Number(q.get('since_id'))); }
   if (q.get('from')) { where.push('t.txn_date >= ?'); args.push(q.get('from') + ' 00:00:00'); }
   if (q.get('to')) { where.push('t.txn_date <= ?'); args.push(q.get('to') + ' 23:59:59'); }
   if (q.get('type')) { where.push('t.type = ?'); args.push(q.get('type')); }
@@ -444,8 +520,8 @@ function txnFilters(url) {
   return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', args };
 }
 
-async function listTransactions(env, url) {
-  const { sql, args } = txnFilters(url);
+async function listTransactions(env, url, scope) {
+  const { sql, args } = txnFilters(url, scope);
   const page = Math.max(1, Number(url.searchParams.get('page') || 1));
   const per = Math.min(200, Math.max(1, Number(url.searchParams.get('per_page') || 50)));
   const total = await first(env, `SELECT COUNT(*) n, IFNULL(SUM(CASE WHEN type='in' THEN amount END),0) tin, IFNULL(SUM(CASE WHEN type='out' THEN amount END),0) tout FROM transactions t ${sql}`, ...args);
@@ -494,8 +570,8 @@ async function deleteTransaction(env, id) {
   return json({ ok: true });
 }
 
-async function exportCsv(env, url) {
-  const { sql, args } = txnFilters(url);
+async function exportCsv(env, url, scope) {
+  const { sql, args } = txnFilters(url, scope);
   const rows = await all(env, `SELECT t.*, c.name category_name FROM transactions t LEFT JOIN categories c ON c.id=t.category_id ${sql} ORDER BY t.txn_date, t.id`, ...args);
   const head = ['Ngày giờ', 'Loại', 'Số tiền', 'Thu', 'Chi', 'Danh mục', 'Tag', 'Nội dung', 'Ghi chú', 'Tài khoản', 'Ngân hàng', 'Mã TT', 'Mã tham chiếu', 'Số dư sau GD', 'Nguồn'];
   const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -510,8 +586,11 @@ async function exportCsv(env, url) {
 }
 
 // ---------------------------------------------------------------- tổng quan
-async function summary(env, url) {
-  const { sql, args } = txnFilters(url);
+async function summary(env, url, scope) {
+  return json(await summaryData(env, url, scope));
+}
+async function summaryData(env, url, scope) {
+  const { sql, args } = txnFilters(url, scope);
   const totals = await first(env, `SELECT IFNULL(SUM(CASE WHEN type='in' THEN amount END),0) tin, IFNULL(SUM(CASE WHEN type='out' THEN amount END),0) tout,
     COUNT(*) n, SUM(CASE WHEN category_id IS NULL THEN 1 ELSE 0 END) uncategorized FROM transactions t ${sql}`, ...args);
   const byMonth = await all(env, `SELECT substr(txn_date,1,7) month, IFNULL(SUM(CASE WHEN type='in' THEN amount END),0) tin,
@@ -520,10 +599,11 @@ async function summary(env, url) {
     FROM transactions t LEFT JOIN categories c ON c.id=t.category_id ${sql} GROUP BY t.type, t.category_id ORDER BY total DESC`, ...args);
   const byAccount = await all(env, `SELECT t.account_number, MAX(t.bank) bank, IFNULL(SUM(CASE WHEN type='in' THEN amount END),0) tin,
     IFNULL(SUM(CASE WHEN type='out' THEN amount END),0) tout FROM transactions t ${sql} GROUP BY t.account_number ORDER BY tin DESC`, ...args);
-  const accounts = await all(env, 'SELECT * FROM bank_accounts ORDER BY bank');
-  const pending = await first(env, "SELECT COUNT(*) n, IFNULL(SUM(amount - paid_amount),0) total FROM payment_requests WHERE status='pending'");
+  const accounts = await listAccounts(env, scope);
+  const sc = scopeSql('account_number', scope);
+  const pending = await first(env, `SELECT COUNT(*) n, IFNULL(SUM(amount - paid_amount),0) total FROM payment_requests WHERE status='pending' ${sc.sql ? 'AND ' + sc.sql : ''}`, ...sc.args);
   const lastSync = await first(env, 'SELECT * FROM sync_log ORDER BY id DESC LIMIT 1');
-  return json({ totals, byMonth, byCategory, byAccount, accounts, pending, lastSync });
+  return { totals, byMonth, byCategory, byAccount, accounts, pending, lastSync };
 }
 
 // ---------------------------------------------------------------- danh mục, quy tắc, cài đặt
@@ -555,50 +635,153 @@ async function saveSettings(env, b) {
   return json(await getSettings(env));
 }
 
-// ---------------------------------------------------------------- thiết lập SePay
+// ---------------------------------------------------------------- quản lý kết nối SePay
 const mask = (v) => (v ? '••••' + String(v).slice(-4) : '');
-async function sepayConfigView(env, url) {
-  const c = await cfg(env);
-  return {
-    sepay_env: c.sepayEnv,
-    webhook_auth: c.webhookAuth,
-    api_token_set: !!c.apiToken,
-    api_token_hint: mask(c.apiToken),
-    webhook_secret_set: !!c.webhookSecret,
-    webhook_secret_hint: mask(c.webhookSecret),
-    webhook_url: `${url.origin}/api/sepay/webhook`,
-    api_base: env.SEPAY_API_BASE || SEPAY_BASE[c.sepayEnv] || SEPAY_BASE.sandbox,
-    last_webhook: await first(env, "SELECT txn_date, amount, type, created_at FROM transactions WHERE source='webhook' ORDER BY id DESC LIMIT 1"),
-  };
+async function connectionsView(env, url) {
+  const conns = await listConnections(env);
+  const out = [];
+  for (const c of conns) {
+    out.push({
+      id: c.id, name: c.name, sepay_env: c.sepay_env, webhook_auth: c.webhook_auth, active: c.active,
+      api_token_set: !!c.api_token, api_token_hint: mask(c.api_token),
+      webhook_secret_set: !!c.webhook_secret, webhook_secret_hint: mask(c.webhook_secret),
+      webhook_url: `${url.origin}/api/sepay/webhook/${c.id}`,
+      last_sync_at: c.last_sync_at, last_sync_error: c.last_sync_error,
+      last_webhook: await first(env, 'SELECT received_at, status, message FROM webhook_log WHERE connection_id=? ORDER BY id DESC LIMIT 1', c.id),
+      accounts: await all(env, 'SELECT bank, account_number, holder, balance FROM bank_accounts WHERE connection_id=? ORDER BY bank', c.id),
+    });
+  }
+  return out;
 }
-async function saveSepayConfig(env, b, url) {
-  const stmts = [];
-  const put = (k, v) => stmts.push(env.DB.prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(k, v));
-  if (b.sepay_env) { if (!['sandbox', 'production'].includes(b.sepay_env)) throw new HttpError(400, 'Môi trường không hợp lệ'); put('sepay_env', b.sepay_env); }
-  if (b.webhook_auth) { if (!['hmac', 'apikey', 'none'].includes(b.webhook_auth)) throw new HttpError(400, 'Kiểu xác thực không hợp lệ'); put('webhook_auth', b.webhook_auth); }
+async function saveConnection(env, b, url) {
+  const fields = [];
+  const args = [];
+  if (b.name !== undefined) { if (!String(b.name).trim()) throw new HttpError(400, 'Cần đặt tên kết nối'); fields.push('name=?'); args.push(String(b.name).trim()); }
+  if (b.sepay_env !== undefined) { if (!['sandbox', 'production'].includes(b.sepay_env)) throw new HttpError(400, 'Môi trường không hợp lệ'); fields.push('sepay_env=?'); args.push(b.sepay_env); }
+  if (b.webhook_auth !== undefined) { if (!['hmac', 'apikey', 'none'].includes(b.webhook_auth)) throw new HttpError(400, 'Kiểu xác thực không hợp lệ'); fields.push('webhook_auth=?'); args.push(b.webhook_auth); }
   if (b.api_token) {
     const t = String(b.api_token).trim();
     if (!/^[A-Za-z0-9]{20,128}$/.test(t)) throw new HttpError(400, 'API Token không đúng định dạng (chuỗi chữ và số, thường 64 ký tự)');
-    put('sepay_api_token', t);
+    fields.push('api_token=?'); args.push(t);
   }
   if (b.webhook_secret) {
     const w = String(b.webhook_secret).trim();
     if (w.length < 16) throw new HttpError(400, 'Secret Key nên dài ít nhất 16 ký tự');
-    put('sepay_webhook_secret', w);
+    fields.push('webhook_secret=?'); args.push(w);
   }
-  if (stmts.length) await env.DB.batch(stmts);
-  env._cfg = null;
-  return json(await sepayConfigView(env, url));
+  if (b.active !== undefined) { fields.push('active=?'); args.push(b.active ? 1 : 0); }
+  if (b.id) {
+    if (!(await getConnection(env, b.id))) throw new HttpError(404, 'Không có kết nối');
+    if (fields.length) await run(env, `UPDATE sepay_connections SET ${fields.join(', ')} WHERE id=?`, ...args, b.id);
+  } else {
+    if (!b.name) throw new HttpError(400, 'Cần đặt tên kết nối');
+    const cols = fields.map((f) => f.split('=')[0]);
+    await run(env, `INSERT INTO sepay_connections (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, ...args);
+  }
+  return json(await connectionsView(env, url));
 }
-async function testSepay(env) {
-  const c = await cfg(env);
-  if (!c.apiToken) return { ok: false, message: 'Chưa nhập API Token' };
-  const base = env.SEPAY_API_BASE || SEPAY_BASE[c.sepayEnv] || SEPAY_BASE.sandbox;
-  const r = await fetch(`${base}/bank-accounts?per_page=100`, { headers: { Authorization: `Bearer ${c.apiToken}` } });
-  if (r.status === 401) return { ok: false, message: `Token bị từ chối (401). Kiểm tra token có đúng môi trường ${c.sepayEnv === 'sandbox' ? 'Test mode' : 'Production'} không.` };
+async function testConnection(env, id) {
+  const c = await getConnection(env, id);
+  if (!c) return { ok: false, message: 'Không có kết nối' };
+  if (!c.api_token) return { ok: false, message: 'Chưa nhập API Token' };
+  const r = await fetch(`${connBase(env, c)}/bank-accounts?per_page=100`, { headers: { Authorization: `Bearer ${c.api_token}` } });
+  if (r.status === 401) return { ok: false, message: `Token bị từ chối (401). Kiểm tra token có đúng môi trường ${c.sepay_env === 'sandbox' ? 'Test mode' : 'Production'} không.` };
   if (!r.ok) return { ok: false, message: `SePay trả HTTP ${r.status}` };
   const d = await r.json();
   return { ok: true, accounts: (d.data || []).map((a) => ({ bank: a.bank_short_name, account_number: a.account_number, holder: a.account_holder_name, balance: a.accumulated })) };
+}
+
+// ---------------------------------------------------------------- API key cho bên thứ 3
+const sha256Hex = async (s) => toHex(await crypto.subtle.digest('SHA-256', enc.encode(s)));
+async function createApiKey(env, b, user) {
+  const name = String(b.name || '').trim();
+  if (!name) throw new HttpError(400, 'Cần đặt tên cho API key (vd tên đối tác)');
+  const scopes = b.write ? 'read,write' : 'read';
+  const accounts = Array.isArray(b.accounts) && b.accounts.length ? b.accounts.map(String).join(',') : null;
+  const key = 'tc_' + toHex(crypto.getRandomValues(new Uint8Array(24)));
+  await run(env, 'INSERT INTO api_keys (name, key_prefix, key_hash, scopes, accounts, created_by) VALUES (?,?,?,?,?,?)',
+    name, key.slice(0, 10), await sha256Hex(key), scopes, accounts, user.username);
+  return json({ key, name, scopes, accounts, note: 'Key chỉ hiện một lần. Lưu lại ngay.' });
+}
+
+// ---------------------------------------------------------------- API v1 công khai (xem /docs)
+function v1err(status, code, message) {
+  return json({ status: 'error', error_code: code, message }, status);
+}
+async function handleV1(request, env, url) {
+  const auth = request.headers.get('authorization') || '';
+  const key = auth.startsWith('Bearer ') ? auth.slice(7).trim() : (request.headers.get('x-api-key') || '').trim();
+  if (!key) return v1err(401, 'unauthorized', 'Thiếu API key. Gửi header Authorization: Bearer <API_KEY>');
+  const k = await first(env, 'SELECT * FROM api_keys WHERE key_hash=? AND active=1', await sha256Hex(key));
+  if (!k) return v1err(401, 'unauthorized', 'API key không hợp lệ hoặc đã bị thu hồi');
+  if (!k.last_used_at || Date.now() - Date.parse(k.last_used_at.replace(' ', 'T') + 'Z') > 60e3)
+    await run(env, "UPDATE api_keys SET last_used_at=datetime('now') WHERE id=?", k.id);
+  const scope = k.accounts ? k.accounts.split(',') : null;
+  const canWrite = k.scopes.split(',').includes('write');
+  const p = url.pathname.slice('/api/v1'.length);
+  const m = request.method;
+  let mm;
+  try {
+    if (p === '/transactions' && m === 'GET') {
+      const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+      const per = Math.min(100, Math.max(1, Number(url.searchParams.get('per_page') || 50)));
+      const { sql, args } = txnFilters(url, scope);
+      const total = await first(env, `SELECT COUNT(*) n FROM transactions t ${sql}`, ...args);
+      const order = url.searchParams.get('since_id') ? 't.id ASC' : 't.txn_date DESC, t.id DESC';
+      const rows = await all(env, `SELECT t.*, c.name category_name FROM transactions t LEFT JOIN categories c ON c.id=t.category_id ${sql} ORDER BY ${order} LIMIT ? OFFSET ?`, ...args, per, (page - 1) * per);
+      return json({ status: 'success', data: rows.map(v1Txn), meta: { pagination: { total: total.n, per_page: per, current_page: page, last_page: Math.max(1, Math.ceil(total.n / per)), has_more: page * per < total.n } } });
+    }
+    if ((mm = p.match(/^\/transactions\/(\d+)$/)) && m === 'GET') {
+      const sc = scopeSql('t.account_number', scope);
+      const t = await first(env, `SELECT t.*, c.name category_name FROM transactions t LEFT JOIN categories c ON c.id=t.category_id WHERE t.id=? ${sc.sql ? 'AND ' + sc.sql : ''}`, Number(mm[1]), ...sc.args);
+      if (!t) return v1err(404, 'not_found', 'Không tìm thấy giao dịch');
+      return json({ status: 'success', data: v1Txn(t) });
+    }
+    if (p === '/summary' && m === 'GET') {
+      const d = await summaryData(env, url, scope);
+      return json({ status: 'success', data: { total_in: d.totals.tin, total_out: d.totals.tout, net: d.totals.tin - d.totals.tout, count: d.totals.n,
+        by_month: d.byMonth.map((x) => ({ month: x.month, total_in: x.tin, total_out: x.tout })),
+        by_category: d.byCategory.map((x) => ({ type: x.type, category_id: x.category_id, category: x.name, total: x.total, count: x.n })),
+        by_account: d.byAccount.map((x) => ({ account_number: x.account_number, bank: x.bank, total_in: x.tin, total_out: x.tout })) } });
+    }
+    if (p === '/accounts' && m === 'GET') {
+      const rows = await listAccounts(env, scope);
+      return json({ status: 'success', data: rows.map((a) => ({ account_number: a.account_number, bank: a.bank, holder: a.holder, label: a.label, balance: a.balance, last_transaction: a.last_transaction })) });
+    }
+    if (p === '/categories' && m === 'GET') {
+      return json({ status: 'success', data: await all(env, 'SELECT id, name, type FROM categories ORDER BY type, sort, name') });
+    }
+    if (p === '/payment-requests' && m === 'POST') {
+      if (!canWrite) return v1err(403, 'forbidden', 'API key này chỉ có quyền đọc');
+      const b = await body(request);
+      if (scope && b.account_number && !scope.includes(String(b.account_number))) return v1err(403, 'forbidden', 'Không được dùng tài khoản này');
+      if (scope && !b.account_number) { const st = await getSettings(env); b.account_number = scope.includes(st.qr_account) ? st.qr_account : scope[0]; }
+      const r = await createPaymentRequest(env, b, { username: 'api:' + k.name });
+      const pr = await r.json();
+      return json({ status: 'success', data: v1Pr(pr, await getSettings(env)) }, 201);
+    }
+    if ((mm = p.match(/^\/payment-requests\/([A-Za-z0-9]+)$/)) && m === 'GET') {
+      const sc = scopeSql('account_number', scope);
+      const pr = await first(env, `SELECT * FROM payment_requests WHERE code=? ${sc.sql ? 'AND ' + sc.sql : ''}`, mm[1].toUpperCase(), ...sc.args);
+      if (!pr) return v1err(404, 'not_found', 'Không tìm thấy yêu cầu thu');
+      return json({ status: 'success', data: v1Pr(pr, await getSettings(env)) });
+    }
+    return v1err(404, 'not_found', 'Endpoint không tồn tại. Xem tài liệu tại /docs');
+  } catch (e) {
+    if (e instanceof HttpError) return v1err(e.status, 'invalid_request', e.message);
+    throw e;
+  }
+}
+function v1Txn(t) {
+  return { id: t.id, transaction_date: t.txn_date, account_number: t.account_number, bank: t.bank, transfer_type: t.type, amount: t.amount,
+    content: t.content, code: t.code, reference_code: t.reference_code, balance_after: t.accumulated, category_id: t.category_id,
+    category: t.category_name || null, tag: t.tag, note: t.note, source: t.source, created_at: t.created_at };
+}
+function v1Pr(pr, s) {
+  const acc = pr.account_number || s.qr_account, bank = pr.bank || s.qr_bank;
+  const qr = acc && bank ? `https://vietqr.app/img?${new URLSearchParams({ acc, bank, amount: pr.amount, des: pr.code, template: 'compact' })}` : null;
+  return { code: pr.code, amount: pr.amount, paid_amount: pr.paid_amount, status: pr.status, customer: pr.customer, description: pr.description,
+    account_number: acc, bank, qr_image_url: qr, transfer_content: pr.code, paid_transaction_id: pr.paid_txn_id, created_at: pr.created_at, paid_at: pr.paid_at };
 }
 
 // ---------------------------------------------------------------- người dùng & phiên
@@ -627,7 +810,13 @@ async function currentUser(request, env) {
   if (!sid) return null;
   const s = await verifySession(env, sid);
   if (!s || s.exp < Date.now()) return null;
-  return first(env, 'SELECT id, username, display_name, role FROM users WHERE id=? AND active=1', s.uid);
+  const u = await first(env, 'SELECT id, username, display_name, role FROM users WHERE id=? AND active=1', s.uid);
+  if (!u) return null;
+  // Người xem có gán tài khoản thì chỉ thấy các tài khoản đó; admin, biên tập thấy tất cả
+  const accs = (await all(env, 'SELECT account_number FROM user_accounts WHERE user_id=?', u.id)).map((r) => r.account_number);
+  u.scope = u.role === 'viewer' && accs.length ? accs : null;
+  u.accounts = accs;
+  return u;
 }
 
 async function saveUser(env, b) {
@@ -639,7 +828,13 @@ async function saveUser(env, b) {
     const username = String(b.username || '').trim().toLowerCase();
     if (!/^[a-z0-9._-]{3,32}$/.test(username)) throw new HttpError(400, 'Tên đăng nhập 3-32 ký tự a-z, 0-9, . _ -');
     if (!b.password || b.password.length < 8) throw new HttpError(400, 'Mật khẩu tối thiểu 8 ký tự');
-    await run(env, 'INSERT INTO users (username, display_name, password_hash, role) VALUES (?,?,?,?)', username, b.display_name || null, await hashPassword(b.password), role);
+    const r = await run(env, 'INSERT INTO users (username, display_name, password_hash, role) VALUES (?,?,?,?)', username, b.display_name || null, await hashPassword(b.password), role);
+    b.id = r.meta.last_row_id;
+  }
+  if (Array.isArray(b.accounts)) {
+    const stmts = [env.DB.prepare('DELETE FROM user_accounts WHERE user_id=?').bind(b.id)];
+    for (const a of b.accounts) stmts.push(env.DB.prepare('INSERT OR IGNORE INTO user_accounts (user_id, account_number) VALUES (?,?)').bind(b.id, String(a)));
+    await env.DB.batch(stmts);
   }
   return json({ ok: true });
 }

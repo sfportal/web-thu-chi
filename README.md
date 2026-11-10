@@ -11,7 +11,9 @@ Webtool quản lý thu chi tự động: mọi giao dịch ngân hàng liên k�
 - **Tổng quan**: tổng thu, chi, chênh lệch; biểu đồ theo tháng; thu chi theo danh mục; số dư từng tài khoản.
 - **Thu tiền QR**: tạo yêu cầu thu với mã (vd `TT123456`), sinh ảnh VietQR; tiền về khớp mã thì tự chuyển “Đã thu” và gắn danh mục.
 - **Xuất CSV** (mở được bằng Excel, có BOM UTF-8).
-- **Người dùng & phân quyền**: Quản trị / Biên tập / Chỉ xem.
+- **Nhiều kết nối SePay**: mỗi tài khoản SePay (công ty) có API Token, URL webhook `/api/sepay/webhook/<id>` và Secret Key riêng; mọi tài khoản ngân hàng liên kết tự hiện ra.
+- **API cho bên thứ 3**: cấp/thu hồi API key (chỉ đọc hoặc thêm quyền tạo yêu cầu thu, giới hạn theo tài khoản ngân hàng). Tài liệu công khai tại `/docs`.
+- **Người dùng & phân quyền**: Quản trị / Biên tập / Chỉ xem; người “Chỉ xem” có thể giới hạn chỉ thấy một số tài khoản ngân hàng.
 
 ## Cài đặt và deploy
 

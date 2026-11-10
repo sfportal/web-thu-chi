@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tài liệu API Thu chi · v1</title>
+<style>
+  :root { --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --brand:#0f766e; --code:#0b1220; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:#fff; }
+  header { background:var(--brand); color:#fff; padding:18px 24px; }
+  header h1 { margin:0; font-size:20px; } header p { margin:4px 0 0; opacity:.85; font-size:14px; }
+  .wrap { display:grid; grid-template-columns:230px 1fr; max-width:1180px; margin:0 auto; }
+  nav { position:sticky; top:0; align-self:start; padding:20px 16px; border-right:1px solid var(--line); height:100vh; overflow:auto; font-size:14px; }
+  nav a { display:block; color:var(--ink); text-decoration:none; padding:3px 0; } nav a:hover { color:var(--brand); }
+  nav .grp { color:var(--muted); font-size:12px; text-transform:uppercase; margin:14px 0 4px; letter-spacing:.04em; }
+  main { padding:24px 32px 80px; min-width:0; }
+  h2 { margin-top:40px; padding-top:8px; border-top:1px solid var(--line); font-size:20px; }
+  h3 { margin-top:28px; font-size:16px; }
+  code { background:#f1f5f9; padding:1px 5px; border-radius:4px; font-size:13px; }
+  pre { background:var(--code); color:#e2e8f0; padding:14px 16px; border-radius:8px; overflow-x:auto; font-size:13px; line-height:1.5; }
+  pre code { background:none; padding:0; color:inherit; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:8px 0 16px; }
+  th, td { text-align:left; border-bottom:1px solid var(--line); padding:7px 8px; vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:13px; }
+  .ep { display:flex; gap:10px; align-items:center; font-family:ui-monospace,Menlo,monospace; font-size:14px; background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .m { font-weight:700; padding:1px 8px; border-radius:4px; color:#fff; font-size:12px; }
+  .get { background:#2563eb; } .post { background:#16a34a; }
+  .note { background:#fef9c3; border:1px solid #fde047; border-radius:8px; padding:10px 14px; font-size:14px; }
+  @media (max-width:800px) { .wrap { grid-template-columns:1fr; } nav { display:none; } main { padding:16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tài liệu API Thu chi · v1</h1>
+  <p>Đọc giao dịch ngân hàng, số dư, báo cáo thu chi và tạo yêu cầu thu tiền bằng VietQR. Dữ liệu được đồng bộ tự động từ SePay.</p>
+</header>
+<div class="wrap">
+<nav>
+  <div class="grp">Bắt đầu</div>
+  <a href="#overview">Tổng quan</a><a href="#auth">Xác thực</a><a href="#format">Định dạng phản hồi</a><a href="#errors">Mã lỗi</a>
+  <div class="grp">Endpoint</div>
+  <a href="#transactions">Danh sách giao dịch</a><a href="#transaction">Chi tiết giao dịch</a><a href="#polling">Lấy giao dịch mới (polling)</a>
+  <a href="#summary">Tổng hợp thu chi</a><a href="#accounts">Tài khoản ngân hàng</a><a href="#categories">Danh mục</a>
+  <a href="#pr-create">Tạo yêu cầu thu tiền</a><a href="#pr-get">Trạng thái yêu cầu thu</a>
+  <div class="grp">Khác</div>
+  <a href="#samples">Code mẫu</a><a href="#limits">Giới hạn &amp; lưu ý</a>
+</nav>
+<main>
+
+<section id="overview">
+  <h2 style="border-top:0;margin-top:0">Tổng quan</h2>
+  <p>Base URL:</p>
+  <pre><code><span class="base">https://YOUR-DOMAIN</span>/api/v1</code></pre>
+  <p>Mọi request và response dùng JSON, mã hoá UTF-8. Số tiền là số nguyên, đơn vị VNĐ. Thời gian theo giờ Việt Nam (UTC+7), định dạng <code>YYYY-MM-DD HH:mm:ss</code>, riêng <code>created_at</code> và <code>paid_at</code> theo UTC.</p>
+  <p>Quản trị viên cấp API key ở mục <b>API &amp; tích hợp</b> trong hệ thống. Mỗi key có thể chỉ có quyền đọc, hoặc thêm quyền tạo yêu cầu thu tiền, và có thể bị giới hạn chỉ thấy một số tài khoản ngân hàng.</p>
+</section>
+
+<section id="auth">
+  <h2>Xác thực</h2>
+  <p>Gửi API key trong header <code>Authorization</code> ở mọi request:</p>
+  <pre><code>Authorization: Bearer tc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
+  <p>Hoặc header <code>X-API-Key: tc_...</code>. API key có toàn quyền trong phạm vi được cấp, chỉ dùng ở server, không đặt trong mã chạy trên trình duyệt hay ứng dụng di động.</p>
+</section>
+
+<section id="format">
+  <h2>Định dạng phản hồi</h2>
+<pre><code>{
+  "status": "success",
+  "data": [ ... ],
+  "meta": { "pagination": { "total": 150, "per_page": 50, "current_page": 1, "last_page": 3, "has_more": true } }
+}</code></pre>
+</section>
+
+<section id="errors">
+  <h2>Mã lỗi</h2>
+  <table><tr><th>HTTP</th><th>error_code</th><th>Ý nghĩa</th></tr>
+    <tr><td>400</td><td>invalid_request</td><td>Tham số hoặc body không hợp lệ</td></tr>
+    <tr><td>401</td><td>unauthorized</td><td>Thiếu API key, key sai hoặc đã bị thu hồi</td></tr>
+    <tr><td>403</td><td>forbidden</td><td>Key không có quyền thao tác này hoặc tài khoản này</td></tr>
+    <tr><td>404</td><td>not_found</td><td>Không tìm thấy tài nguyên</td></tr>
+  </table>
+<pre><code>{ "status": "error", "error_code": "unauthorized", "message": "API key không hợp lệ hoặc đã bị thu hồi" }</code></pre>
+</section>
+
+<section id="transactions">
+  <h2>Danh sách giao dịch</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/transactions</div>
+  <h3>Tham số query</h3>
+  <table><tr><th>Tham số</th><th>Kiểu</th><th>Mô tả</th></tr>
+    <tr><td>from</td><td>date</td><td>Từ ngày (bao gồm), <code>YYYY-MM-DD</code></td></tr>
+    <tr><td>to</td><td>date</td><td>Đến ngày (bao gồm), <code>YYYY-MM-DD</code></td></tr>
+    <tr><td>type</td><td>string</td><td><code>in</code> (tiền vào) hoặc <code>out</code> (tiền ra)</td></tr>
+    <tr><td>account</td><td>string</td><td>Số tài khoản ngân hàng</td></tr>
+    <tr><td>category</td><td>integer | none</td><td>ID danh mục, hoặc <code>none</code> để lấy giao dịch chưa phân loại</td></tr>
+    <tr><td>q</td><td>string</td><td>Tìm trong nội dung, mã thanh toán, mã tham chiếu, ghi chú, tag</td></tr>
+    <tr><td>since_id</td><td>integer</td><td>Chỉ lấy giao dịch có <code>id</code> lớn hơn giá trị này, sắp xếp tăng dần. Xem <a href="#polling">polling</a></td></tr>
+    <tr><td>page</td><td>integer</td><td>Trang, mặc định 1</td></tr>
+    <tr><td>per_page</td><td>integer</td><td>Số bản ghi mỗi trang, mặc định 50, tối đa 100</td></tr>
+  </table>
+  <h3>Trường của một giao dịch</h3>
+  <table><tr><th>Trường</th><th>Kiểu</th><th>Mô tả</th></tr>
+    <tr><td>id</td><td>integer</td><td>ID giao dịch trong hệ thống, tăng dần</td></tr>
+    <tr><td>transaction_date</td><td>string</td><td>Thời điểm giao dịch tại ngân hàng</td></tr>
+    <tr><td>account_number</td><td>string</td><td>Số tài khoản. <code>TIEN_MAT</code> nếu là giao dịch tiền mặt nhập tay</td></tr>
+    <tr><td>bank</td><td>string</td><td>Tên ngân hàng</td></tr>
+    <tr><td>transfer_type</td><td>string</td><td><code>in</code> hoặc <code>out</code></td></tr>
+    <tr><td>amount</td><td>integer</td><td>Số tiền, luôn dương</td></tr>
+    <tr><td>content</td><td>string</td><td>Nội dung chuyển khoản gốc</td></tr>
+    <tr><td>code</td><td>string | null</td><td>Mã thanh toán SePay bóc tách được (vd <code>TT123456</code>)</td></tr>
+    <tr><td>reference_code</td><td>string | null</td><td>Mã tham chiếu của ngân hàng</td></tr>
+    <tr><td>balance_after</td><td>integer | null</td><td>Số dư sau giao dịch (một số ngân hàng không trả)</td></tr>
+    <tr><td>category_id, category</td><td>integer, string</td><td>Danh mục thu chi</td></tr>
+    <tr><td>tag, note</td><td>string</td><td>Tag và ghi chú nội bộ</td></tr>
+    <tr><td>source</td><td>string</td><td><code>webhook</code>, <code>api</code> (đối soát) hoặc <code>manual</code> (nhập tay)</td></tr>
+  </table>
+  <h3>Ví dụ</h3>
+<pre><code>curl "<span class="base">https://YOUR-DOMAIN</span>/api/v1/transactions?from=2026-11-01&amp;to=2026-11-30&amp;type=in" \
+  -H "Authorization: Bearer $API_KEY"</code></pre>
+<pre><code>{
+  "status": "success",
+  "data": [
+    {
+      "id": 1,
+      "transaction_date": "2026-11-10 21:00:00",
+      "account_number": "9733795742708",
+      "bank": "MBBank",
+      "transfer_type": "in",
+      "amount": 10000,
+      "content": "TT385377 CHUYEN TIEN",
+      "code": "TT385377",
+      "reference_code": "FT26314081400032",
+      "balance_after": null,
+      "category_id": 5,
+      "category": "Thu khác",
+      "tag": null,
+      "note": "Thu theo mã TT385377",
+      "source": "api",
+      "created_at": "2026-11-10 14:12:47"
+    }
+  ],
+  "meta": { "pagination": { "total": 1, "per_page": 50, "current_page": 1, "last_page": 1, "has_more": false } }
+}</code></pre>
+</section>
+
+<section id="transaction">
+  <h2>Chi tiết giao dịch</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/transactions/{id}</div>
+</section>
+
+<section id="polling">
+  <h2>Lấy giao dịch mới (polling)</h2>
+  <p>Lưu <code>id</code> lớn nhất đã xử lý, mỗi lần gọi truyền <code>since_id</code> bằng giá trị đó. Kết quả sắp xếp theo <code>id</code> tăng dần; đọc hết các trang (<code>has_more</code>) rồi mới cập nhật <code>since_id</code>. Nên gọi 1 đến 5 phút một lần.</p>
+<pre><code>GET /api/v1/transactions?since_id=1250&amp;per_page=100</code></pre>
+</section>
+
+<section id="summary">
+  <h2>Tổng hợp thu chi</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/summary</div>
+  <p>Nhận các tham số lọc giống danh sách giao dịch (<code>from</code>, <code>to</code>, <code>account</code>, <code>type</code>, <code>category</code>).</p>
+<pre><code>{
+  "status": "success",
+  "data": {
+    "total_in": 6200000, "total_out": 45550000, "net": -39350000, "count": 5,
+    "by_month": [ { "month": "2026-11", "total_in": 6200000, "total_out": 45550000 } ],
+    "by_category": [ { "type": "out", "category_id": 6, "category": "Lương, nhân sự", "total": 45000000, "count": 1 } ],
+    "by_account": [ { "account_number": "9733795742708", "bank": "MBBank", "total_in": 6200000, "total_out": 45350000 } ]
+  }
+}</code></pre>
+</section>
+
+<section id="accounts">
+  <h2>Tài khoản ngân hàng</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/accounts</div>
+  <p>Trả về các tài khoản key được phép xem: <code>account_number</code>, <code>bank</code>, <code>holder</code>, <code>label</code>, <code>balance</code>, <code>last_transaction</code>.</p>
+</section>
+
+<section id="categories">
+  <h2>Danh mục</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/categories</div>
+  <p>Danh sách <code>id</code>, <code>name</code>, <code>type</code> (<code>in</code> / <code>out</code>), dùng để hiểu <code>category_id</code> hoặc gắn danh mục khi tạo yêu cầu thu.</p>
+</section>
+
+<section id="pr-create">
+  <h2>Tạo yêu cầu thu tiền</h2>
+  <div class="ep"><span class="m post">POST</span>/api/v1/payment-requests</div>
+  <p>Cần API key có quyền <b>tạo yêu cầu thu tiền</b>. Hệ thống sinh mã thanh toán duy nhất và link ảnh VietQR. Khi khách chuyển khoản có mã này trong nội dung và đủ số tiền, yêu cầu tự chuyển sang <code>paid</code>.</p>
+  <table><tr><th>Trường body</th><th>Kiểu</th><th>Mô tả</th></tr>
+    <tr><td>amount</td><td>integer, bắt buộc</td><td>Số tiền cần thu</td></tr>
+    <tr><td>customer</td><td>string</td><td>Tên khách hàng</td></tr>
+    <tr><td>description</td><td>string</td><td>Mô tả nội bộ, vd mã đơn hàng của bạn</td></tr>
+    <tr><td>category_id</td><td>integer</td><td>Danh mục thu gắn cho giao dịch khi tiền về</td></tr>
+    <tr><td>code</td><td>string</td><td>Tự đặt mã thanh toán (chữ và số). Bỏ trống để hệ thống sinh</td></tr>
+    <tr><td>account_number, bank</td><td>string</td><td>Tài khoản nhận tiền. Bỏ trống để dùng tài khoản mặc định</td></tr>
+  </table>
+<pre><code>curl -X POST "<span class="base">https://YOUR-DOMAIN</span>/api/v1/payment-requests" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"amount": 500000, "customer": "Nguyen Van A", "description": "Don hang #1024"}'</code></pre>
+<pre><code>{
+  "status": "success",
+  "data": {
+    "code": "TT482913", "amount": 500000, "paid_amount": 0, "status": "pending",
+    "customer": "Nguyen Van A", "description": "Don hang #1024",
+    "account_number": "9733795742708", "bank": "MBBank",
+    "qr_image_url": "https://vietqr.app/img?acc=9733795742708&amp;bank=MBBank&amp;amount=500000&amp;des=TT482913&amp;template=compact",
+    "transfer_content": "TT482913",
+    "paid_transaction_id": null, "created_at": "2026-11-11 02:00:00", "paid_at": null
+  }
+}</code></pre>
+  <p>Hiển thị <code>qr_image_url</code> cho khách quét, hoặc in số tài khoản kèm nội dung chuyển khoản <code>transfer_content</code>.</p>
+</section>
+
+<section id="pr-get">
+  <h2>Trạng thái yêu cầu thu</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/payment-requests/{code}</div>
+  <p><code>status</code>: <code>pending</code> (chờ thu), <code>paid</code> (đã thu đủ), <code>cancelled</code> (đã huỷ). <code>paid_amount</code> cộng dồn nếu khách chuyển nhiều lần.</p>
+</section>
+
+<section id="samples">
+  <h2>Code mẫu</h2>
+  <h3>Node.js</h3>
+<pre><code>const BASE = '<span class="base">https://YOUR-DOMAIN</span>/api/v1';
+const headers = { Authorization: `Bearer ${process.env.THUCHI_API_KEY}` };
+
+let sinceId = 0; // lưu lại trong database của bạn
+async function pollNewTransactions() {
+  for (let page = 1; ; page++) {
+    const r = await fetch(`${BASE}/transactions?since_id=${sinceId}&amp;per_page=100&amp;page=${page}`, { headers });
+    const { data, meta } = await r.json();
+    for (const t of data) { /* xử lý giao dịch t */ }
+    if (data.length) sinceId = Math.max(sinceId, ...data.map((t) => t.id));
+    if (!meta.pagination.has_more) break;
+  }
+}</code></pre>
+  <h3>PHP</h3>
+<pre><code>$ch = curl_init('<span class="base">https://YOUR-DOMAIN</span>/api/v1/summary?from=2026-11-01&amp;to=2026-11-30');
+curl_setopt_array($ch, [
+  CURLOPT_RETURNTRANSFER =&gt; true,
+  CURLOPT_HTTPHEADER =&gt; ['Authorization: Bearer ' . getenv('THUCHI_API_KEY')],
+]);
+$summary = json_decode(curl_exec($ch), true)['data'];
+echo $summary['total_in'] - $summary['total_out'];</code></pre>
+  <h3>Python</h3>
+<pre><code>import os, requests
+r = requests.post("<span class="base">https://YOUR-DOMAIN</span>/api/v1/payment-requests",
+    headers={"Authorization": f"Bearer {os.environ['THUCHI_API_KEY']}"},
+    json={"amount": 500000, "customer": "Nguyen Van A"})
+pr = r.json()["data"]
+print(pr["code"], pr["qr_image_url"])</code></pre>
+</section>
+
+<section id="limits">
+  <h2>Giới hạn &amp; lưu ý</h2>
+  <ul>
+    <li>Giao dịch ngân hàng về hệ thống qua webhook SePay trong vài giây; đối soát tự động chạy mỗi 5 phút để bù giao dịch bị sót.</li>
+    <li>Nên gọi API không quá 5 request mỗi giây. Polling 1 đến 5 phút một lần là đủ.</li>
+    <li>Không có API sửa hoặc xoá giao dịch ngân hàng: dữ liệu ngân hàng là nguồn gốc để đối soát.</li>
+    <li>Nếu nghi lộ API key, báo quản trị viên thu hồi và cấp key mới.</li>
+  </ul>
+  <p class="note">Tài liệu này dành cho đối tác được cấp API key. Liên hệ quản trị viên hệ thống để được cấp quyền.</p>
+</section>
+
+</main>
+</div>
+<script>
+  for (const el of document.querySelectorAll('.base')) el.textContent = location.origin;
+</script>
+</body>
+</html>
