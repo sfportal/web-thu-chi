@@ -122,6 +122,7 @@ async function handleApi(request, env, ctx, url) {
 
   if (p === '/api/accounts' && m === 'GET') return json(await all(env, 'SELECT * FROM bank_accounts ORDER BY bank, account_number'));
   if (p === '/api/sync' && m === 'POST') { need('admin'); return json(await syncFromSepay(env)); }
+  if (p === '/api/webhook-log' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT * FROM webhook_log ORDER BY id DESC LIMIT 30')); }
   if (p === '/api/sync-log' && m === 'GET') return json(await all(env, 'SELECT * FROM sync_log ORDER BY id DESC LIMIT 20'));
 
   if (p === '/api/payment-requests' && m === 'GET') return json(await all(env, 'SELECT * FROM payment_requests ORDER BY id DESC LIMIT 500'));
@@ -155,32 +156,59 @@ const run = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).run();
 // ---------------------------------------------------------------- webhook
 async function handleWebhook(request, env) {
   const raw = await request.text();
+  let res;
+  try {
+    res = await processWebhook(request, env, raw);
+  } catch (e) {
+    res = { status: 500, message: 'Lỗi xử lý: ' + (e.message || e) };
+  }
+  // Ghi nhật ký mọi lần gọi, kể cả thất bại, để xem ở tab Thiết lập SePay
+  try {
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO webhook_log (status, message, sepay_id, amount, transfer_type, ip) VALUES (?,?,?,?,?,?)')
+        .bind(res.status, res.message || null, res.p?.id != null ? String(res.p.id) : null,
+          res.p?.transferAmount != null ? Number(res.p.transferAmount) : null, res.p?.transferType || null,
+          request.headers.get('cf-connecting-ip') || null),
+      env.DB.prepare('DELETE FROM webhook_log WHERE id <= (SELECT MAX(id) - 1000 FROM webhook_log)'),
+    ]);
+  } catch (e) { console.error('webhook_log', e); }
+  if (res.status === 200) return json({ success: true });
+  return json({ success: false, message: res.message }, res.status);
+}
+
+async function processWebhook(request, env, raw) {
   const c = await cfg(env);
   const mode = c.webhookAuth;
   const secret = c.webhookSecret;
 
-  if (mode === 'hmac') {
-    const sig = request.headers.get('x-sepay-signature') || '';
-    const ts = Number(request.headers.get('x-sepay-timestamp') || 0);
-    if (!secret || Math.abs(Date.now() / 1000 - ts) > 300) return json({ success: false, message: 'Request expired' }, 401);
-    const expected = 'sha256=' + (await hmacHex(secret, `${ts}.${raw}`));
-    if (!timingSafeEqual(expected, sig)) return json({ success: false, message: 'Invalid signature' }, 401);
-  } else if (mode === 'apikey') {
-    const auth = request.headers.get('authorization') || '';
-    if (!secret || !auth.startsWith('Apikey ') || !timingSafeEqual(auth.slice(7), secret))
-      return json({ success: false, message: 'Unauthorized' }, 401);
-  }
-
-  let p;
+  let p = null;
   const ct = request.headers.get('content-type') || '';
   if (ct.includes('application/json') || raw.trim().startsWith('{')) {
-    try { p = JSON.parse(raw); } catch { return json({ success: false, message: 'Bad JSON' }, 400); }
+    try { p = JSON.parse(raw); } catch { return { status: 400, message: 'Body không phải JSON hợp lệ' }; }
   } else {
     p = Object.fromEntries(new URLSearchParams(raw));
   }
-  if (!p.id || !p.transferType || p.transferAmount == null) return json({ success: false, message: 'Thiếu trường bắt buộc' }, 400);
 
-  await ingestTransaction(env, {
+  if (mode === 'hmac') {
+    const sig = request.headers.get('x-sepay-signature') || '';
+    const ts = Number(request.headers.get('x-sepay-timestamp') || 0);
+    if (!secret) return { status: 401, p, message: 'Tool chưa có Secret Key webhook' };
+    if (!sig || !ts) {
+      const auth = request.headers.get('authorization') || '';
+      return { status: 401, p, message: auth.startsWith('Apikey') ? 'SePay đang gửi kiểu API Key, nhưng tool chờ HMAC-SHA256. Đổi kiểu xác thực cho khớp.' : 'Thiếu chữ ký HMAC. Trên SePay hãy chọn bảo mật HMAC-SHA256.' };
+    }
+    if (Math.abs(Date.now() / 1000 - ts) > 300) return { status: 401, p, message: 'Chữ ký quá hạn (lệch giờ > 5 phút)' };
+    const expected = 'sha256=' + (await hmacHex(secret, `${ts}.${raw}`));
+    if (!timingSafeEqual(expected, sig)) return { status: 401, p, message: 'Sai chữ ký: Secret Key trên SePay khác với trên tool' };
+  } else if (mode === 'apikey') {
+    const auth = request.headers.get('authorization') || '';
+    if (!secret || !auth.startsWith('Apikey ') || !timingSafeEqual(auth.slice(7), secret))
+      return { status: 401, p, message: 'Sai API Key webhook' };
+  }
+
+  if (!p || !p.id || !p.transferType || p.transferAmount == null) return { status: 400, p, message: 'Thiếu trường bắt buộc (id, transferType, transferAmount)' };
+
+  const r = await ingestTransaction(env, {
     source: 'webhook',
     sepay_webhook_id: Number(p.id),
     reference_code: p.referenceCode || null,
@@ -195,7 +223,7 @@ async function handleWebhook(request, env) {
     sub_account: p.subAccount || null,
     accumulated: p.accumulated ? Number(p.accumulated) : null,
   });
-  return json({ success: true });
+  return { status: 200, p, message: r.duplicate ? 'OK (đã có, bỏ qua trùng)' : 'OK, đã ghi giao dịch' };
 }
 
 // Ghi giao dịch, chống trùng giữa webhook (id số) và API (UUID)

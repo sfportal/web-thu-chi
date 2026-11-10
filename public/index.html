@@ -235,6 +235,10 @@
       <div class="row"><button class="btn" id="spSave">Lưu thiết lập</button><button class="btn ghost" id="spTest">Kiểm tra kết nối API</button><button class="btn ghost" id="spSync">Đối soát ngay</button></div>
       <div id="spResult" class="small" style="margin-top:10px"></div>
     </div>
+    <div class="card"><h2>Nhật ký webhook (30 lần gần nhất)</h2>
+      <p class="small">Mỗi lần SePay gọi tới tool đều được ghi ở đây, kể cả khi bị từ chối. Trống nghĩa là SePay chưa gọi lần nào: kiểm tra webhook đã bật, đúng URL và đúng tài khoản.</p>
+      <table><thead><tr><th>Lúc (UTC)</th><th>Kết quả</th><th>Chi tiết</th><th>ID SePay</th><th class="r">Số tiền</th></tr></thead><tbody id="whBody"></tbody></table>
+    </div>
   </section>
 
   <!-- Quản trị -->
@@ -511,6 +515,9 @@ async function loadSepay() {
   $('#spAuth').value = c.webhook_auth;
   $('#spToken').value = ''; $('#spSecret').value = '';
   $('#spTokenHint').textContent = c.api_token_set ? `Đang lưu: ${c.api_token_hint}. Để trống nếu không đổi.` : '';
+  const logs = await api('/webhook-log');
+  $('#whBody').innerHTML = logs.map((l) => `<tr><td class="small">${esc(l.received_at)}</td><td><span class="pill" style="background:${l.status === 200 ? 'var(--in)' : 'var(--out)'}">${l.status}</span></td>
+    <td class="small">${esc(l.message || '')}</td><td class="small">${esc(l.sepay_id || '')}</td><td class="r">${l.amount == null ? '' : (l.transfer_type === 'out' ? '-' : '+') + fmt(l.amount)}</td></tr>`).join('') || '<tr><td colspan="5" class="small">SePay chưa gọi webhook lần nào</td></tr>';
   $('#spSecretHint').textContent = c.webhook_secret_set ? `Đang lưu: ${c.webhook_secret_hint}. Để trống nếu không đổi.` : '';
 }
 const copy = (t) => navigator.clipboard.writeText(t).then(() => toast('Đã sao chép'));

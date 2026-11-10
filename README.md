@@ -5,7 +5,7 @@ Webtool quản lý thu chi tự động: mọi giao dịch ngân hàng liên k�
 ## Tính năng
 
 - **Nhận webhook SePay** tại `/api/sepay/webhook`, xác thực HMAC-SHA256 (hoặc API Key), chống trùng theo `id` giao dịch, trả `{"success": true}` đúng chuẩn SePay.
-- **Đối soát tự động mỗi 30 phút** qua SePay API v2 (`/v2/transactions`, `/v2/bank-accounts`): bổ sung giao dịch webhook bị sót, cập nhật số dư. Chống trùng chéo giữa webhook và API (theo tài khoản + mã tham chiếu + số tiền).
+- **Đối soát tự động mỗi 5 phút** qua SePay API v2 (`/v2/transactions`, `/v2/bank-accounts`): bổ sung giao dịch webhook bị sót, cập nhật số dư. Chống trùng chéo giữa webhook và API (theo tài khoản + mã tham chiếu + số tiền).
 - **Tự phân loại** theo quy tắc từ khoá trong nội dung chuyển khoản (không phân biệt dấu, hỗ trợ regex). Sửa tay được, quy tắc không ghi đè phân loại tay.
 - **Nhập tay** giao dịch tiền mặt.
 - **Tổng quan**: tổng thu, chi, chênh lệch; biểu đồ theo tháng; thu chi theo danh mục; số dư từng tài khoản.

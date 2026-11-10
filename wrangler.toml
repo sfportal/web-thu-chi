@@ -14,9 +14,9 @@ database_name = "sepay-thuchi"
 database_id = "00000000-0000-0000-0000-000000000000" # THAY bằng ID in ra khi chạy: npx wrangler d1 create sepay-thuchi
 migrations_dir = "migrations"
 
-# Đối soát với SePay API mỗi 30 phút
+# Đối soát với SePay API mỗi 5 phút (gói Free dư sức)
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["*/5 * * * *"]
 
 [vars]
 # Giá trị mặc định; chỉnh trong tab Thiết lập SePay trên giao diện
