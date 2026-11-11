@@ -38,7 +38,7 @@
 <div class="wrap">
 <nav>
   <div class="grp">Bắt đầu</div>
-  <a href="#overview">Tổng quan</a><a href="#auth">Xác thực</a><a href="#format">Định dạng phản hồi</a><a href="#errors">Mã lỗi</a>
+  <a href="#overview">Tổng quan</a><a href="#auth">Xác thực</a><a href="#ping">Kiểm tra kết nối</a><a href="#format">Định dạng phản hồi</a><a href="#errors">Mã lỗi</a>
   <div class="grp">Endpoint</div>
   <a href="#transactions">Danh sách giao dịch</a><a href="#transaction">Chi tiết giao dịch</a><a href="#polling">Lấy giao dịch mới (polling)</a>
   <a href="#summary">Tổng hợp thu chi</a><a href="#accounts">Tài khoản ngân hàng</a><a href="#categories">Danh mục</a>
@@ -66,6 +66,24 @@
   <p>Gửi API key trong header <code>Authorization</code> ở mọi request:</p>
   <pre><code>Authorization: Bearer tc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
   <p>Hoặc header <code>X-API-Key: tc_...</code>. API key có toàn quyền trong phạm vi được cấp, chỉ dùng ở server, không đặt trong mã chạy trên trình duyệt hay ứng dụng di động.</p>
+</section>
+
+<section id="ping">
+  <h2>Kiểm tra kết nối</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/ping</div>
+  <p>Gọi endpoint này đầu tiên để biết API key hợp lệ và key được cấp những quyền gì. Không tốn phí, không gọi sang SePay, Goship hay eSMS.</p>
+<pre><code>curl "<span class="base">https://YOUR-DOMAIN</span>/api/v1/ping" -H "Authorization: Bearer $API_KEY"</code></pre>
+<pre><code>{ "status": "success", "data": {
+  "ok": true,
+  "api_key": { "name": "Phần mềm kế toán", "prefix": "tc_3f9a0c1", "created_at": "2026-11-11 07:00:00" },
+  "permissions": { "read": true, "payment_requests": true, "goship": true, "otp": false },
+  "bank_accounts": "all", "goship_accounts": [1], "esms_accounts": [],
+  "server_time": "2026-11-11T08:15:00.000Z" } }</code></pre>
+  <table><tr><th>Kết quả</th><th>Ý nghĩa</th></tr>
+    <tr><td>HTTP 200, <code>ok: true</code></td><td>Kết nối thành công. Xem <code>permissions</code> để biết được dùng nhóm API nào</td></tr>
+    <tr><td>HTTP 401 <code>unauthorized</code></td><td>Thiếu key, key sai hoặc đã bị thu hồi</td></tr>
+  </table>
+  <p><code>bank_accounts</code>, <code>goship_accounts</code>, <code>esms_accounts</code>: <code>"all"</code> là dùng được tất cả, danh sách là chỉ dùng được các tài khoản đó, <code>[]</code> là chưa được cấp quyền nhóm đó.</p>
 </section>
 
 <section id="format">

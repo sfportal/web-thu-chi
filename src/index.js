@@ -716,6 +716,13 @@ async function handleV1(request, env, url) {
   const m = request.method;
   let mm;
   try {
+    if (p === '/ping' && m === 'GET') {
+      const sc = k.scopes.split(',');
+      return json({ status: 'success', data: { ok: true, api_key: { name: k.name, prefix: k.key_prefix, created_at: k.created_at },
+        permissions: { read: true, payment_requests: sc.includes('write'), goship: sc.includes('goship'), otp: sc.includes('otp') },
+        bank_accounts: scope || 'all', goship_accounts: sc.includes('goship') ? (k.goship_accounts ? k.goship_accounts.split(',').map(Number) : 'all') : [],
+        esms_accounts: sc.includes('otp') ? (k.otp_accounts ? k.otp_accounts.split(',').map(Number) : 'all') : [], server_time: new Date().toISOString() } });
+    }
     if (p === '/transactions' && m === 'GET') {
       const page = Math.max(1, Number(url.searchParams.get('page') || 1));
       const per = Math.min(100, Math.max(1, Number(url.searchParams.get('per_page') || 50)));
