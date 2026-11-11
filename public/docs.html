@@ -38,7 +38,7 @@
 <div class="wrap">
 <nav>
   <div class="grp">Bắt đầu</div>
-  <a href="#overview">Tổng quan</a><a href="#auth">Xác thực</a><a href="#ping">Kiểm tra kết nối</a><a href="#format">Định dạng phản hồi</a><a href="#errors">Mã lỗi</a>
+  <a href="#overview">Tổng quan</a><a href="#auth">Xác thực</a><a href="#ping">Kiểm tra kết nối</a><a href="#status">Trạng thái tích hợp</a><a href="#format">Định dạng phản hồi</a><a href="#errors">Mã lỗi</a>
   <div class="grp">Endpoint</div>
   <a href="#transactions">Danh sách giao dịch</a><a href="#transaction">Chi tiết giao dịch</a><a href="#polling">Lấy giao dịch mới (polling)</a>
   <a href="#summary">Tổng hợp thu chi</a><a href="#accounts">Tài khoản ngân hàng</a><a href="#categories">Danh mục</a>
@@ -84,6 +84,36 @@
     <tr><td>HTTP 401 <code>unauthorized</code></td><td>Thiếu key, key sai hoặc đã bị thu hồi</td></tr>
   </table>
   <p><code>bank_accounts</code>, <code>goship_accounts</code>, <code>esms_accounts</code>: <code>"all"</code> là dùng được tất cả, danh sách là chỉ dùng được các tài khoản đó, <code>[]</code> là chưa được cấp quyền nhóm đó.</p>
+</section>
+
+<section id="status">
+  <h2>Trạng thái tích hợp</h2>
+  <div class="ep"><span class="m get">GET</span>/api/v1/status</div>
+  <p>Cho biết từng tích hợp (SePay, Goship, eSMS) mà API key được dùng: môi trường <b>production</b> hay <b>sandbox</b>, đã cấu hình đủ chưa, và kết quả kiểm tra sống với SePay, Goship, eSMS. Dùng endpoint này để hiển thị trạng thái kết nối trong hệ thống của bạn thay vì tự kết nối thẳng tới các dịch vụ đó.</p>
+  <p>Kết quả kiểm tra sống được lưu đệm 60 giây (<code>cached: true</code>). Thêm <code>?live=0</code> để chỉ đọc cấu hình, không kiểm tra sống.</p>
+<pre><code>curl "<span class="base">https://YOUR-DOMAIN</span>/api/v1/status" -H "Authorization: Bearer $API_KEY"</code></pre>
+<pre><code>{ "status": "success", "data": {
+  "ok": false, "live": true, "checked_at": "2026-11-11T08:15:00.000Z",
+  "api_key": { "name": "DaLa", "prefix": "tc_a8e2107" },
+  "integrations": {
+    "sepay":  { "enabled": true, "permissions": { "read": true, "payment_requests": true }, "accounts": [
+      { "id": 1, "name": "SePay chính", "environment": "production", "active": true, "configured": true,
+        "bank_accounts": [ { "account_number": "1017588888", "bank": "Vietcombank" } ],
+        "last_webhook_at": "2026-11-11 07:58:02", "last_webhook_ok": true, "last_sync_at": "2026-11-11 08:10:00", "last_sync_error": null,
+        "healthy": true, "message": "Kết nối SePay API hoạt động", "health_checked_at": "2026-11-11T08:15:00.000Z" } ] },
+    "goship": { "enabled": true, "accounts": [
+      { "id": 1, "name": "dala", "environment": "sandbox", "active": true, "configured": true, "sender_ready": false, "last_webhook_at": null,
+        "healthy": false, "message": "Goship từ chối Access Token của \"dala\" (401)…", "health_checked_at": "2026-11-11T08:15:00.000Z" } ] },
+    "esms":   { "enabled": false, "accounts": [] } } } }</code></pre>
+  <table><tr><th>Trường</th><th>Ý nghĩa</th></tr>
+    <tr><td>ok</td><td><code>true</code> khi không có tài khoản đang hoạt động nào kiểm tra thất bại</td></tr>
+    <tr><td>enabled</td><td>API key có được dùng nhóm tích hợp này không</td></tr>
+    <tr><td>environment</td><td><code>production</code> (giao dịch, vận đơn, tin nhắn thật) hoặc <code>sandbox</code> (thử nghiệm)</td></tr>
+    <tr><td>configured</td><td>Đã nhập đủ thông tin kết nối</td></tr>
+    <tr><td>healthy</td><td><code>true</code> kiểm tra sống thành công, <code>false</code> thất bại (xem <code>message</code>), <code>null</code> chưa kiểm tra</td></tr>
+    <tr><td>sender_ready</td><td>Goship: đã khai báo đủ địa chỉ lấy hàng mặc định</td></tr>
+    <tr><td>channels</td><td>eSMS: các kênh gửi mã đã sẵn sàng (<code>sms</code>, <code>zalo</code>, <code>zalo_sms</code>)</td></tr>
+  </table>
 </section>
 
 <section id="format">

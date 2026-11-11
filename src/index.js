@@ -716,6 +716,7 @@ async function handleV1(request, env, url) {
   const m = request.method;
   let mm;
   try {
+    if (p === '/status' && m === 'GET') return json({ status: 'success', data: await integrationStatus(env, k, scope, url.searchParams.get('live') !== '0') });
     if (p === '/ping' && m === 'GET') {
       const sc = k.scopes.split(',');
       return json({ status: 'success', data: { ok: true, api_key: { name: k.name, prefix: k.key_prefix, created_at: k.created_at },
@@ -915,6 +916,75 @@ async function handleV1Otp(request, env, url, k, p, m) {
     return json({ status: 'success', data: es.otpView(o) });
   }
   return v1err(404, 'not_found', 'Endpoint OTP không tồn tại. Xem tài liệu tại /docs#otp');
+}
+
+// ---------------------------------------------------------------- trạng thái tích hợp cho đối tác (GET /api/v1/status)
+// Kiểm tra sống từng tài khoản key được dùng, kết quả lưu đệm 60 giây để không gọi dồn sang SePay/Goship/eSMS
+async function cachedCheck(kind, id, live, fn) {
+  if (!live) return null;
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  const key = new Request(`https://health-cache.local/${kind}/${id}`);
+  const hit = cache && (await cache.match(key));
+  if (hit) return { ...(await hit.json()), cached: true };
+  let r;
+  try { r = await fn(); } catch (e) { r = { healthy: false, message: e.message }; }
+  r = { ...r, checked_at: new Date().toISOString() };
+  if (cache) await cache.put(key, new Response(JSON.stringify(r), { headers: { 'content-type': 'application/json', 'cache-control': 'max-age=60' } }));
+  return r;
+}
+async function integrationStatus(env, k, scope, live) {
+  const sc = k.scopes.split(',');
+  const envOf = (e) => (e === 'sandbox' ? 'sandbox' : 'production');
+  const out = { api_key: { name: k.name, prefix: k.key_prefix }, checked_at: new Date().toISOString(), live, integrations: {} };
+
+  // SePay: các kết nối chứa tài khoản ngân hàng key được xem
+  const conns = await listConnections(env);
+  const accs = await all(env, 'SELECT account_number, bank, connection_id FROM bank_accounts');
+  const sepay = [];
+  for (const c of conns) {
+    const mine = accs.filter((a) => a.connection_id === c.id && (!scope || scope.includes(a.account_number)));
+    if (scope && !mine.length) continue;
+    const lw = await first(env, 'SELECT received_at, status FROM webhook_log WHERE connection_id=? ORDER BY id DESC LIMIT 1', c.id);
+    const h = c.active && c.api_token ? await cachedCheck('sepay', c.id, live, async () => { const r = await testConnection(env, c.id); return { healthy: r.ok, message: r.ok ? 'Kết nối SePay API hoạt động' : r.message }; }) : null;
+    sepay.push({ id: c.id, name: c.name, environment: envOf(c.sepay_env), active: !!c.active, configured: !!(c.api_token && (c.webhook_secret || c.webhook_auth === 'none')),
+      bank_accounts: mine.map((a) => ({ account_number: a.account_number, bank: a.bank })),
+      last_webhook_at: lw?.received_at || null, last_webhook_ok: lw ? lw.status === 200 : null, last_sync_at: c.last_sync_at, last_sync_error: c.last_sync_error,
+      healthy: h ? h.healthy : null, message: h ? h.message : (!c.active ? 'Kết nối đang ngưng' : !c.api_token ? 'Chưa nhập API Token' : 'Chưa kiểm tra (live=0)'), health_checked_at: h?.checked_at || null });
+  }
+  out.integrations.sepay = { enabled: true, permissions: { read: true, payment_requests: sc.includes('write') }, accounts: sepay };
+
+  // Goship
+  if (sc.includes('goship')) {
+    const allowed = k.goship_accounts ? k.goship_accounts.split(',') : null;
+    const list = (await all(env, 'SELECT * FROM goship_accounts ORDER BY id')).filter((a) => !allowed || allowed.includes(String(a.id)));
+    const rows = [];
+    for (const a of list) {
+      let sender = {}; try { sender = a.sender ? JSON.parse(a.sender) : {}; } catch {}
+      const h = a.active && a.access_token ? await cachedCheck('goship', a.id, live, async () => { const d = await gs.gsFetch(env, a, 'GET', '/cities'); return { healthy: true, message: `Goship ${a.env === 'sandbox' ? 'Sandbox' : 'Production'} chấp nhận Access Token (${(d.data || []).length} tỉnh/thành)` }; }) : null;
+      const lw = await first(env, 'SELECT received_at, status FROM goship_webhook_log WHERE account_id=? ORDER BY id DESC LIMIT 1', a.id);
+      rows.push({ id: a.id, name: a.name, environment: envOf(a.env), active: !!a.active, configured: !!a.access_token, sender_ready: !!(sender.name && sender.phone && sender.street && sender.city && sender.district),
+        last_webhook_at: lw?.received_at || null, healthy: h ? h.healthy : null,
+        message: h ? h.message : (!a.active ? 'Tài khoản đang ngưng' : !a.access_token ? 'Chưa nhập Access Token' : 'Chưa kiểm tra (live=0)'), health_checked_at: h?.checked_at || null });
+    }
+    out.integrations.goship = { enabled: true, accounts: rows };
+  } else out.integrations.goship = { enabled: false, accounts: [] };
+
+  // eSMS
+  if (sc.includes('otp')) {
+    const allowed = k.otp_accounts ? k.otp_accounts.split(',') : null;
+    const list = (await all(env, 'SELECT * FROM esms_accounts ORDER BY id')).filter((a) => !allowed || allowed.includes(String(a.id)));
+    const rows = [];
+    for (const a of list) {
+      const h = a.active && a.api_key && a.secret_key ? await cachedCheck('esms', a.id, live, async () => { const r = await es.testEsmsAccount(env, a.id); return { healthy: r.ok, message: r.ok ? 'eSMS chấp nhận ApiKey/SecretKey' : r.message }; }) : null;
+      rows.push({ id: a.id, name: a.name, environment: a.sandbox ? 'sandbox' : 'production', active: !!a.active, configured: !!(a.api_key && a.secret_key), channels: es.channelsOf(a), default_channel: a.default_channel,
+        healthy: h ? h.healthy : null, message: h ? h.message : (!a.active ? 'Tài khoản đang ngưng' : !(a.api_key && a.secret_key) ? 'Chưa nhập ApiKey/SecretKey' : 'Chưa kiểm tra (live=0)'), health_checked_at: h?.checked_at || null });
+    }
+    out.integrations.esms = { enabled: true, accounts: rows };
+  } else out.integrations.esms = { enabled: false, accounts: [] };
+
+  const usable = Object.values(out.integrations).filter((g) => g.enabled).flatMap((g) => g.accounts.filter((a) => a.active));
+  out.ok = usable.every((a) => a.healthy !== false);
+  return out;
 }
 
 function v1Txn(t) {
