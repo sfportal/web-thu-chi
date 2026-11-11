@@ -12,7 +12,15 @@
   header h1 { font-size:17px; margin:0; font-weight:600; }
   nav { display:flex; gap:4px; flex-wrap:wrap; }
   nav button { background:transparent; color:#d1fae5; border:0; padding:6px 12px; border-radius:6px; cursor:pointer; font:inherit; }
-  nav button.on, nav button:hover { background:rgba(255,255,255,.15); color:#fff; }
+  nav button.on, nav button:hover, nav .dd.on > .ddt, nav .dd.open > .ddt { background:rgba(255,255,255,.15); color:#fff; }
+  nav .dd { position:relative; }
+  nav .ddm { display:none; position:absolute; top:100%; left:0; z-index:30; min-width:220px; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px rgba(15,23,42,.15); padding:6px; margin-top:4px; }
+  nav .ddm::before { content:""; position:absolute; top:-8px; left:0; right:0; height:8px; }
+  nav .dd:hover > .ddm, nav .dd.open > .ddm { display:block; }
+  nav .ddm button, nav .ddm a { display:block; width:100%; text-align:left; color:var(--ink); padding:8px 12px; border-radius:6px; font-size:14px; text-decoration:none; }
+  nav .ddm button:hover, nav .ddm a:hover { background:#f1f5f9; color:var(--ink); }
+  nav .ddm button.on { background:#ccfbf1; color:#115e59; font-weight:600; }
+  @media (max-width:700px) { nav .dd:hover > .ddm { display:none; } nav .dd.open > .ddm { display:block; } }
   .who { margin-left:auto; font-size:13px; opacity:.9; }
   .who a { color:#fff; margin-left:8px; cursor:pointer; text-decoration:underline; }
   main { padding:20px; max-width:1280px; margin:0 auto; }
@@ -66,15 +74,26 @@
   <h1>Thu chi SePay</h1>
   <nav id="nav" class="hidden">
     <button data-tab="dash" class="on">Tổng quan</button>
-    <button data-tab="txns">Giao dịch</button>
-    <button data-tab="collect">Thu tiền QR</button>
-    <button data-tab="cats">Danh mục &amp; quy tắc</button>
-    <button data-tab="accts">Tài khoản</button>
-    <button data-tab="goship" data-role="editor">Vận chuyển Goship</button>
-    <button data-tab="esms" data-role="admin">Xác minh SĐT (eSMS)</button>
-    <button data-tab="sepay" data-role="admin">Kết nối SePay</button>
-    <button data-tab="apikeys" data-role="admin">API &amp; tích hợp</button>
-    <button data-tab="admin" data-role="admin">Quản trị</button>
+    <div class="dd"><button class="ddt" type="button">Thu chi ▾</button><div class="ddm">
+      <button data-tab="txns">Giao dịch</button>
+      <button data-tab="collect">Thu tiền QR</button>
+      <button data-tab="accts">Tài khoản ngân hàng</button>
+      <button data-tab="cats">Danh mục &amp; quy tắc</button>
+    </div></div>
+    <div class="dd" data-role="editor"><button class="ddt" type="button">Vận chuyển ▾</button><div class="ddm">
+      <button data-tab="goship">Vận đơn Goship</button>
+      <button data-tab="goship" data-scroll="#gaList" data-role="admin">Tài khoản Goship</button>
+    </div></div>
+    <div class="dd" data-role="admin"><button class="ddt" type="button">Tích hợp ▾</button><div class="ddm">
+      <button data-tab="sepay">Kết nối SePay</button>
+      <button data-tab="esms">Xác minh SĐT (eSMS)</button>
+      <button data-tab="apikeys">API key cho đối tác</button>
+      <a href="/docs" target="_blank">Tài liệu API ↗</a>
+    </div></div>
+    <div class="dd" data-role="admin"><button class="ddt" type="button">Quản trị ▾</button><div class="ddm">
+      <button data-tab="admin" data-scroll="#uBody">Người dùng &amp; phân quyền</button>
+      <button data-tab="admin" data-scroll="#sForm">Cài đặt chung</button>
+    </div></div>
   </nav>
   <div class="who" id="who"></div>
 </header>
@@ -368,9 +387,15 @@ function changePassword() {
 }
 
 // ---------------------------------------------------------------- điều hướng
-$$('#nav button').forEach((b) => b.onclick = () => show(b.dataset.tab));
-function show(tab) {
-  $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
+$$('#nav [data-tab]').forEach((b) => b.onclick = () => { show(b.dataset.tab, b); });
+$$('#nav .ddt').forEach((t) => t.onclick = (e) => { e.stopPropagation(); const dd = t.parentElement, o = !dd.classList.contains('open'); $$('#nav .dd').forEach((x) => x.classList.remove('open')); dd.classList.toggle('open', o); });
+document.addEventListener('click', (e) => { if (!e.target.closest('#nav .dd')) $$('#nav .dd').forEach((x) => x.classList.remove('open')); });
+function show(tab, btn) {
+  btn = btn || $(`#nav [data-tab="${tab}"]:not([data-scroll])`) || $(`#nav [data-tab="${tab}"]`);
+  $$('#nav [data-tab]').forEach((b) => b.classList.toggle('on', b === btn));
+  $$('#nav .dd').forEach((d) => { d.classList.toggle('on', d.contains(btn)); d.classList.remove('open'); });
+  const sc = btn?.dataset.scroll;
+  setTimeout(() => { if (sc && $(sc)) $(sc).closest('.card, #gaList').scrollIntoView({ behavior:'smooth', block:'start' }); else window.scrollTo(0, 0); }, sc ? 350 : 0);
   $$('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== 'tab-' + tab));
   ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, goship:loadGoship, esms:loadEsms, sepay:loadSepay, apikeys:loadKeys, admin:loadAdmin })[tab]();
 }
