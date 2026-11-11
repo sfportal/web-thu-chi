@@ -122,8 +122,22 @@ export async function testGsAccount(env, id) {
     await run(env, "UPDATE goship_accounts SET last_check_at=datetime('now'), last_error=NULL WHERE id=?", a.id);
     return { ok: true, message: `Kết nối ${envName(a)} thành công, đọc được ${(d.data || []).length} tỉnh/thành.` };
   } catch (e) {
-    await run(env, "UPDATE goship_accounts SET last_check_at=datetime('now'), last_error=? WHERE id=?", e.message, a.id);
-    return { ok: false, message: e.message };
+    let msg = e.message;
+    // Token bị từ chối: thử môi trường còn lại để chỉ đúng nguyên nhân hay gặp nhất (token Production nhưng chọn Sandbox và ngược lại)
+    if (/\(401\)/.test(msg) && !env.GOSHIP_API_BASE) {
+      const other = { ...a, env: a.env === 'sandbox' ? 'production' : 'sandbox' };
+      try {
+        await gsFetch(env, other, 'GET', '/cities');
+        msg = `Access Token này thuộc môi trường ${envName(other)}, không phải ${envName(a)}. Đổi Môi trường sang ${envName(other)} rồi bấm Lưu.`;
+        if (a.access_token) await run(env, 'UPDATE goship_accounts SET env=? WHERE id=?', other.env, a.id);
+        await run(env, "UPDATE goship_accounts SET last_check_at=datetime('now'), last_error=NULL WHERE id=?", a.id);
+        return { ok: true, switched: other.env, message: `Token đúng với ${envName(other)}: đã tự chuyển tài khoản sang ${envName(other)}. Tải lại trang để chọn khu vực lấy hàng.` };
+      } catch {
+        msg = `Goship từ chối Access Token ở cả Sandbox và Production (401). Hãy lấy lại token ở shop.goship.io → Cài đặt → Kết nối API (mục Access Token, không phải Client Secret hay Refresh Token), dán lại và Lưu.`;
+      }
+    }
+    await run(env, "UPDATE goship_accounts SET last_check_at=datetime('now'), last_error=? WHERE id=?", msg, a.id);
+    return { ok: false, message: msg };
   }
 }
 

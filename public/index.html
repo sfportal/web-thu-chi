@@ -701,7 +701,8 @@ async function locPicker(box, accountId, preset = {}) {
   const [c, d, w] = $$('select', box);
   const fill = (sel, rows, ph, val) => { sel.innerHTML = `<option value="">${ph}</option>` + rows.map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join(''); if (val) sel.value = val; };
   const load = (kind, code) => api(`/goship/locations/${kind}?account=${accountId}${code ? '&code=' + code : ''}`);
-  try { fill(c, await load('cities'), 'Tỉnh/thành…', preset.city); } catch { return; }
+  try { fill(c, await load('cities'), 'Tỉnh/thành…', preset.city); }
+  catch (e) { box.innerHTML = `<span class="small out">Chưa tải được danh sách tỉnh/thành từ Goship: ${esc(e.message)}</span>`; return; }
   c.onchange = async () => { fill(d, c.value ? await load('districts', c.value) : [], 'Quận/huyện…'); fill(w, [], 'Phường/xã…'); };
   d.onchange = async () => fill(w, d.value ? await load('wards', d.value) : [], 'Phường/xã…');
   if (preset.city) { fill(d, await load('districts', preset.city), 'Quận/huyện…', preset.district); }
@@ -739,7 +740,7 @@ function renderGsAccounts() {
       b.sender = { ...Object.fromEntries($$('[data-s]', card).map((el) => [el.dataset.s, el.value])), ...($('select', loc) ? locValue(loc) : { city:a.sender.city, district:a.sender.district, ward:a.sender.ward }) };
       gsAccts = await api('/goship/accounts/' + id, { method:'PUT', body:b }); toast('Đã lưu tài khoản Goship'); renderGsAccounts();
     };
-    $('[data-test]', card).onclick = async () => { msg.textContent = 'Đang kiểm tra…'; const r = await api(`/goship/accounts/${id}/test`, { method:'POST' }); msg.innerHTML = `<b class="${r.ok ? 'in' : 'out'}">${esc(r.message)}</b>`; };
+    $('[data-test]', card).onclick = async () => { msg.textContent = 'Đang kiểm tra…'; const r = await api(`/goship/accounts/${id}/test`, { method:'POST' }); msg.innerHTML = `<b class="${r.ok ? 'in' : 'out'}">${esc(r.message)}</b>`; if (r.switched) { toast(r.message); gsAccts = await api('/goship/accounts'); renderGsAccounts(); } };
     $('[data-reg]', card).onclick = async () => { msg.textContent = 'Đang đăng ký webhook…'; try { const r = await api(`/goship/accounts/${id}/webhook`, { method:'POST' }); msg.innerHTML = `<b class="in">${esc(r.message)}</b>`; } catch (e) { msg.innerHTML = `<b class="out">${esc(e.message)}</b>`; } };
     $('[data-log]', card).onclick = async () => {
       const box = $('[data-logbox]', card);
