@@ -70,6 +70,7 @@
     <button data-tab="collect">Thu tiền QR</button>
     <button data-tab="cats">Danh mục &amp; quy tắc</button>
     <button data-tab="accts">Tài khoản</button>
+    <button data-tab="goship" data-role="editor">Vận chuyển Goship</button>
     <button data-tab="sepay" data-role="admin">Kết nối SePay</button>
     <button data-tab="apikeys" data-role="admin">API &amp; tích hợp</button>
     <button data-tab="admin" data-role="admin">Quản trị</button>
@@ -195,6 +196,29 @@
     <div class="card"><h2>Lịch sử đối soát</h2><table><thead><tr><th>Bắt đầu</th><th>Kết thúc</th><th class="r">Lấy về</th><th class="r">Bổ sung</th><th>Lỗi</th></tr></thead><tbody id="slBody"></tbody></table></div>
   </section>
 
+  <!-- Goship -->
+  <section id="tab-goship" class="tab hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">Vận đơn Goship</h2>
+        <div class="row"><button class="btn" id="gsNew">+ Tạo vận đơn</button><button class="btn ghost" id="gsSync">Cập nhật từ Goship</button><span class="small" id="gsMsg"></span></div></div>
+      <div class="filters" style="margin-top:12px">
+        <select id="gsFAcc"></select><select id="gsFStatus"></select>
+        <input id="gsFQ" placeholder="Mã vận đơn, mã đơn, SĐT, tên" style="width:220px"><input type="date" id="gsFFrom"><input type="date" id="gsFTo">
+        <button class="btn ghost" id="gsFGo">Lọc</button>
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Mã Goship</th><th>Mã đơn</th><th>Tài khoản</th><th>Người nhận</th><th>Hãng · mã hãng</th><th class="r">COD</th><th class="r">Phí</th><th>Trạng thái</th><th>Nguồn</th><th>Cập nhật (UTC)</th><th></th></tr></thead><tbody id="gsBody"></tbody></table></div>
+      <div class="pager"><span class="small" id="gsInfo"></span><button class="btn ghost" id="gsPrev">‹</button><button class="btn ghost" id="gsNext">›</button></div>
+    </div>
+    <div data-role="admin">
+      <div class="card">
+        <h2>Tài khoản Goship</h2>
+        <p class="small">Mỗi tài khoản là một shop trên goship.io, có Access Token, địa chỉ lấy hàng và URL webhook riêng. Access Token lấy ở shop.goship.io (Sandbox: dev-shop.goship.io) → <b>Cài đặt → Kết nối API</b>.</p>
+        <div class="row"><button class="btn" id="gaAdd">+ Thêm tài khoản Goship</button></div>
+      </div>
+      <div id="gaList"></div>
+    </div>
+  </section>
+
   <!-- Kết nối SePay -->
   <section id="tab-sepay" class="tab hidden">
     <div class="card">
@@ -222,6 +246,8 @@
         <label>Tên đối tác</label><input name="name" placeholder="VD: Phần mềm kế toán MISA" required>
         <label>Quyền</label><label><input type="checkbox" name="write"> Cho phép tạo yêu cầu thu tiền (mặc định chỉ đọc)</label>
         <label>Tài khoản được xem</label><div id="kAccts" class="row"></div>
+        <label>Goship</label><label><input type="checkbox" name="goship" id="kGs"> Cho phép tra cước, tạo, tra cứu và huỷ vận đơn Goship</label>
+        <label class="kGsRow hidden">Tài khoản Goship</label><div id="kGsAccts" class="row kGsRow hidden"></div>
         <span></span><button class="btn">Tạo API key</button>
       </form>
       <div id="kNew" class="hidden" style="margin-top:12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:12px"></div>
@@ -318,7 +344,7 @@ $$('#nav button').forEach((b) => b.onclick = () => show(b.dataset.tab));
 function show(tab) {
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $$('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== 'tab-' + tab));
-  ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, sepay:loadSepay, apikeys:loadKeys, admin:loadAdmin })[tab]();
+  ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, goship:loadGoship, sepay:loadSepay, apikeys:loadKeys, admin:loadAdmin })[tab]();
 }
 function catOptions(type, withAll) {
   const list = cats.filter((c) => !type || c.type === type);
@@ -577,6 +603,178 @@ async function refreshMe() {
   const envTag = $('#who .env'); if (envTag) envTag.style.display = r.sepay_env === 'sandbox' ? '' : 'none';
 }
 
+// ---------------------------------------------------------------- Goship
+let gsAccts = [], gsStatuses = {}, gsPage = 1;
+const GS_COLOR = (st) => st === 914 || st === 1000 || st === 906 || st === 917 ? 'var(--out)' : st >= 905 && st <= 913 ? 'var(--in)' : st === 907 || st === 908 || st === 915 ? '#d97706' : '#2563eb';
+async function loadGoship() {
+  [gsAccts, gsStatuses] = await Promise.all([api('/goship/accounts'), Object.keys(gsStatuses).length ? gsStatuses : api('/goship/statuses')]);
+  const accSel = $('#gsFAcc'), cur = accSel.value;
+  accSel.innerHTML = '<option value="">Mọi tài khoản</option>' + gsAccts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  accSel.value = cur;
+  if (!$('#gsFStatus').options.length) $('#gsFStatus').innerHTML = '<option value="">Mọi trạng thái</option>' + Object.entries(gsStatuses).map(([k, v]) => `<option value="${k}">${k} · ${esc(v)}</option>`).join('');
+  await loadShipments();
+  if (me.role === 'admin') renderGsAccounts();
+}
+async function loadShipments() {
+  const qs = new URLSearchParams({ account:$('#gsFAcc').value, status:$('#gsFStatus').value, q:$('#gsFQ').value, from:$('#gsFFrom').value, to:$('#gsFTo').value, page:gsPage, per_page:50 });
+  const r = await api('/goship/shipments?' + qs);
+  $('#gsBody').innerHTML = r.data.map((s) => `<tr><td><b>${esc(s.gcode)}</b></td><td class="small">${esc(s.order_id || '')}</td><td class="small">${esc(s.account_name || '#' + s.account_id)}</td>
+    <td class="small">${esc(s.to_name || '')}<br>${esc(s.to_phone || '')}</td><td class="small">${esc(s.carrier || s.carrier_short_name || '')}<br>${s.tracking_url ? `<a href="${esc(s.tracking_url)}" target="_blank" rel="noopener">${esc(s.carrier_code || 'Hành trình')}</a>` : esc(s.carrier_code || '')}</td>
+    <td class="r">${fmt(s.cod)}</td><td class="r">${s.fee == null ? '–' : fmt(s.fee)}</td>
+    <td><span class="pill" style="background:${GS_COLOR(s.status)}">${esc(s.status_text || s.status || '')}</span>${s.status_desc ? `<div class="small">${esc(s.status_desc)}</div>` : ''}${s.carrier_error ? `<div class="small out">${esc(s.carrier_error)}</div>` : ''}</td>
+    <td class="small">${esc(s.source || '')}</td><td class="small">${esc(s.updated_at)}</td>
+    <td style="white-space:nowrap"><button class="btn ghost" data-gsr="${esc(s.gcode)}" title="Lấy trạng thái mới nhất từ Goship">↻</button> ${[900, 901, 902].includes(s.status) ? `<button class="btn danger" data-gsc="${esc(s.gcode)}">Huỷ</button>` : ''}</td></tr>`).join('')
+    || `<tr><td colspan="11" class="small">${gsAccts.length ? 'Chưa có vận đơn nào' : 'Chưa có tài khoản Goship. Quản trị viên thêm ở phần “Tài khoản Goship” bên dưới.'}</td></tr>`;
+  $('#gsInfo').textContent = `${r.total} vận đơn · trang ${r.page}/${Math.max(1, Math.ceil(r.total / r.per_page))}`;
+  $('#gsPrev').disabled = r.page <= 1; $('#gsNext').disabled = r.page * r.per_page >= r.total;
+  $$('[data-gsr]').forEach((b) => b.onclick = async () => { b.disabled = true; try { await api(`/goship/shipments/${b.dataset.gsr}/refresh`, { method:'POST' }); toast('Đã cập nhật'); loadShipments(); } finally { b.disabled = false; } });
+  $$('[data-gsc]').forEach((b) => b.onclick = async () => { if (!confirm(`Huỷ vận đơn ${b.dataset.gsc} trên Goship?`)) return; await api('/goship/shipments/' + b.dataset.gsc, { method:'DELETE' }); toast('Đã huỷ vận đơn'); loadShipments(); });
+}
+$('#gsFGo').onclick = () => { gsPage = 1; loadShipments(); };
+$('#gsPrev').onclick = () => { gsPage--; loadShipments(); };
+$('#gsNext').onclick = () => { gsPage++; loadShipments(); };
+$('#gsSync').onclick = async () => {
+  const ids = $('#gsFAcc').value ? [$('#gsFAcc').value] : gsAccts.filter((a) => a.active && a.access_token_set).map((a) => a.id);
+  if (!ids.length) return toast('Chưa có tài khoản Goship có Access Token');
+  $('#gsMsg').textContent = 'Đang cập nhật…';
+  const out = [];
+  for (const id of ids) { try { out.push((await api(`/goship/accounts/${id}/sync`, { method:'POST' })).message); } catch (e) { out.push(e.message); } }
+  $('#gsMsg').textContent = out.join(' · '); loadShipments();
+};
+
+// Ô chọn Tỉnh / Quận / Phường nối nhau, lấy từ Goship
+async function locPicker(box, accountId, preset = {}) {
+  box.innerHTML = '<select data-l="city" required><option value="">Tỉnh/thành…</option></select><select data-l="district" required><option value="">Quận/huyện…</option></select><select data-l="ward"><option value="">Phường/xã…</option></select>';
+  const [c, d, w] = $$('select', box);
+  const fill = (sel, rows, ph, val) => { sel.innerHTML = `<option value="">${ph}</option>` + rows.map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join(''); if (val) sel.value = val; };
+  const load = (kind, code) => api(`/goship/locations/${kind}?account=${accountId}${code ? '&code=' + code : ''}`);
+  try { fill(c, await load('cities'), 'Tỉnh/thành…', preset.city); } catch { return; }
+  c.onchange = async () => { fill(d, c.value ? await load('districts', c.value) : [], 'Quận/huyện…'); fill(w, [], 'Phường/xã…'); };
+  d.onchange = async () => fill(w, d.value ? await load('wards', d.value) : [], 'Phường/xã…');
+  if (preset.city) { fill(d, await load('districts', preset.city), 'Quận/huyện…', preset.district); }
+  if (preset.district) { fill(w, await load('wards', preset.district), 'Phường/xã…', preset.ward); }
+}
+const locValue = (box) => Object.fromEntries($$('select', box).map((s) => [s.dataset.l, s.value]).filter(([, v]) => v));
+const locText = (box) => $$('select', box).filter((s) => s.value).map((s) => s.selectedOptions[0].text).join(', ');
+
+function renderGsAccounts() {
+  $('#gaList').innerHTML = gsAccts.map((a) => `<div class="card" data-ga="${a.id}" style="${a.active ? '' : 'opacity:.6'}">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(a.name)} <span class="small">#${a.id} · ${a.shipments} vận đơn</span></h2>
+      <div class="row">${badge(true, a.env === 'sandbox' ? 'Sandbox' : 'Production')}${badge(a.access_token_set, a.access_token_set ? 'Có Access Token' : 'Chưa có Access Token')}
+      ${badge(!!a.sender.city, a.sender.city ? 'Có địa chỉ lấy hàng' : 'Chưa có địa chỉ lấy hàng')}
+      ${a.last_webhook ? badge(a.last_webhook.status === 200, 'Webhook: ' + a.last_webhook.status) : badge(false, 'Chưa nhận webhook')}
+      ${a.active ? '' : '<span class="pill" style="background:#94a3b8">Đang ngưng</span>'}</div></div>
+    <div class="form" style="max-width:none;grid-template-columns:150px 1fr;margin-top:12px">
+      <label>URL webhook</label><div class="row"><code style="word-break:break-all">${esc(a.webhook_url)}</code><button class="btn ghost" type="button" data-copy="${esc(a.webhook_url)}">Sao chép</button><button class="btn ghost" type="button" data-reg>Đăng ký lên Goship</button></div>
+      <label>Tên</label><input data-f="name" value="${esc(a.name)}" style="max-width:320px">
+      <label>Môi trường</label><select data-f="env" style="max-width:320px"><option value="production" ${a.env === 'production' ? 'selected' : ''}>Production (shop.goship.io)</option><option value="sandbox" ${a.env === 'sandbox' ? 'selected' : ''}>Sandbox (dev-shop.goship.io)</option></select>
+      <label>Access Token</label><input data-f="access_token" type="password" autocomplete="off" placeholder="${a.access_token_set ? 'Đang lưu ' + esc(a.access_token_hint) + ', để trống nếu không đổi' : 'Dán Access Token (eyJ…)'}">
+      <label>Client Secret</label><input data-f="client_secret" type="password" autocomplete="off" placeholder="${a.client_secret_set ? 'Đang lưu ' + esc(a.client_secret_hint) : 'Tuỳ chọn, để kiểm tra chữ ký webhook'}">
+      <label>Người gửi</label><div class="row"><input data-s="name" placeholder="Tên người/shop gửi" value="${esc(a.sender.name || '')}" style="width:200px"><input data-s="phone" placeholder="SĐT" value="${esc(a.sender.phone || '')}" style="width:140px"><input data-s="street" placeholder="Số nhà, đường" value="${esc(a.sender.street || '')}" style="flex:1;min-width:200px"></div>
+      <label>Khu vực lấy hàng</label><div class="row" data-loc>${a.access_token_set ? '<span class="small">Đang tải…</span>' : '<span class="small">Nhập và lưu Access Token trước để chọn tỉnh/quận/phường</span>'}</div>
+      <label>Kiểm tra gần nhất</label><div class="small">${esc(a.last_check_at || 'Chưa kiểm tra')} ${a.last_error ? '<span class="out">· ' + esc(a.last_error) + '</span>' : ''}</div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn" data-save>Lưu</button><button class="btn ghost" data-test>Kiểm tra</button><button class="btn ghost" data-log>Nhật ký webhook</button>
+      <button class="btn ${a.active ? 'danger' : 'ghost'}" data-toggle>${a.active ? 'Ngưng' : 'Bật lại'}</button><span class="small" data-msg></span></div>
+    <div data-logbox class="hidden" style="margin-top:12px"></div></div>`).join('') || '<div class="card small">Chưa có tài khoản Goship nào. Bấm “+ Thêm tài khoản Goship”.</div>';
+  for (const card of $$('#gaList [data-ga]')) {
+    const id = card.dataset.ga, a = gsAccts.find((x) => x.id == id), msg = $('[data-msg]', card), loc = $('[data-loc]', card);
+    if (a.access_token_set) locPicker(loc, id, a.sender).catch(() => { loc.innerHTML = '<span class="small out">Không tải được địa giới từ Goship, bấm Kiểm tra để xem lỗi</span>'; });
+    $('[data-copy]', card).onclick = (e) => copy(e.target.dataset.copy);
+    $('[data-save]', card).onclick = async () => {
+      const b = {}; $$('[data-f]', card).forEach((el) => { if (el.value !== '' || el.tagName === 'SELECT') b[el.dataset.f] = el.value; });
+      b.sender = { ...Object.fromEntries($$('[data-s]', card).map((el) => [el.dataset.s, el.value])), ...($('select', loc) ? locValue(loc) : { city:a.sender.city, district:a.sender.district, ward:a.sender.ward }) };
+      gsAccts = await api('/goship/accounts/' + id, { method:'PUT', body:b }); toast('Đã lưu tài khoản Goship'); renderGsAccounts();
+    };
+    $('[data-test]', card).onclick = async () => { msg.textContent = 'Đang kiểm tra…'; const r = await api(`/goship/accounts/${id}/test`, { method:'POST' }); msg.innerHTML = `<b class="${r.ok ? 'in' : 'out'}">${esc(r.message)}</b>`; };
+    $('[data-reg]', card).onclick = async () => { msg.textContent = 'Đang đăng ký webhook…'; try { const r = await api(`/goship/accounts/${id}/webhook`, { method:'POST' }); msg.innerHTML = `<b class="in">${esc(r.message)}</b>`; } catch (e) { msg.innerHTML = `<b class="out">${esc(e.message)}</b>`; } };
+    $('[data-log]', card).onclick = async () => {
+      const box = $('[data-logbox]', card);
+      if (!box.classList.toggle('hidden')) {
+        const logs = await api('/goship/webhook-log?account=' + id);
+        box.innerHTML = `<table><thead><tr><th>Lúc (UTC)</th><th>Kết quả</th><th>Chi tiết</th></tr></thead><tbody>${logs.map((l) => `<tr><td class="small">${esc(l.received_at)}</td><td><span class="pill" style="background:${l.status === 200 ? 'var(--in)' : 'var(--out)'}">${l.status}</span></td><td class="small">${esc(l.message || '')}</td></tr>`).join('') || '<tr><td colspan="3" class="small">Goship chưa gọi webhook của tài khoản này</td></tr>'}</tbody></table>`;
+      }
+    };
+    $('[data-toggle]', card).onclick = async () => {
+      if (a.active && !confirm(`Ngưng tài khoản Goship "${a.name}"? Không tạo được vận đơn mới bằng tài khoản này, vận đơn cũ vẫn giữ.`)) return;
+      gsAccts = await api('/goship/accounts/' + id, { method:'PUT', body:{ active: a.active ? 0 : 1 } }); renderGsAccounts();
+    };
+  }
+}
+$('#gaAdd').onclick = () => {
+  const d = $('#dlg');
+  d.innerHTML = `<h2 style="margin-top:0">Thêm tài khoản Goship</h2><form class="form" id="gaf">
+    <label>Tên</label><input name="name" required placeholder="VD: Shop FarmBase, Kho Đắk Lắk">
+    <label>Môi trường</label><select name="env"><option value="production">Production (shop.goship.io)</option><option value="sandbox">Sandbox (dev-shop.goship.io)</option></select>
+    <label>Access Token</label><input name="access_token" type="password" autocomplete="off" placeholder="Có thể nhập sau">
+    <span></span><div class="row"><button class="btn">Tạo</button><button class="btn ghost" type="button" id="gafC">Huỷ</button></div></form>
+    <p class="small">Sau khi tạo: chọn địa chỉ lấy hàng, Lưu, rồi bấm <b>Đăng ký lên Goship</b> để Goship báo trạng thái vận đơn về đây.</p>`;
+  d.showModal();
+  $('#gafC').onclick = () => d.close();
+  $('#gaf').onsubmit = async (e) => {
+    e.preventDefault(); const b = Object.fromEntries(new FormData(e.target)); if (!b.access_token) delete b.access_token;
+    gsAccts = await api('/goship/accounts', { method:'POST', body:b }); d.close(); toast('Đã tạo tài khoản Goship'); loadGoship();
+  };
+};
+
+// Tạo vận đơn: nhập người nhận + gói hàng → tra cước → chọn hãng → tạo
+$('#gsNew').onclick = () => {
+  const usable = gsAccts.filter((a) => a.active && a.access_token_set);
+  if (!usable.length) return toast('Chưa có tài khoản Goship có Access Token');
+  const d = $('#dlg');
+  d.style.maxWidth = '760px';
+  d.innerHTML = `<h2 style="margin-top:0">Tạo vận đơn Goship</h2><form id="gsf" class="form" style="max-width:none">
+    <label>Tài khoản</label><select name="account_id">${usable.map((a) => `<option value="${a.id}">${esc(a.name)}${a.env === 'sandbox' ? ' (Sandbox)' : ''}</option>`).join('')}</select>
+    <label>Gửi từ</label><div class="small" id="gsfFrom"></div>
+    <label>Người nhận</label><div class="row"><input name="to_name" placeholder="Họ tên" required style="width:200px"><input name="to_phone" placeholder="SĐT" required style="width:140px"></div>
+    <label>Địa chỉ</label><input name="to_street" placeholder="Số nhà, đường, thôn/xóm" required>
+    <label>Khu vực</label><div class="row" id="gsfLoc"></div>
+    <label>Nặng (g) · D×R×C (cm)</label><div class="row"><input name="weight" type="number" min="1" placeholder="Nặng (gram)" required style="width:130px"><input name="length" type="number" min="1" placeholder="Dài cm" value="10" style="width:90px"><input name="width" type="number" min="1" placeholder="Rộng cm" value="10" style="width:90px"><input name="height" type="number" min="1" placeholder="Cao cm" value="10" style="width:90px"></div>
+    <label>Thu hộ (COD)</label><input name="cod" type="number" min="0" value="0">
+    <label>Giá trị khai giá</label><input name="amount" type="number" min="0" value="0" placeholder="Dùng tính bảo hiểm">
+    <label>Người trả phí</label><select name="payer"><option value="1">Shop trả</option><option value="0">Người nhận trả</option></select>
+    <label>Mã đơn của bạn</label><input name="order_id" placeholder="Tuỳ chọn, chống tạo trùng">
+    <label>Ghi chú</label><input name="metadata" placeholder="VD: Hàng dễ vỡ, cho xem hàng">
+    <span></span><div class="row"><button class="btn ghost" type="button" id="gsfRate">Tra cước</button><button class="btn ghost" type="button" id="gsfC">Đóng</button></div>
+    </form><div id="gsfRates" style="margin-top:12px"></div>`;
+  d.showModal();
+  d.addEventListener('close', () => { d.style.maxWidth = ''; }, { once:true });
+  const f = $('#gsf');
+  const setAcc = () => {
+    const a = usable.find((x) => x.id == f.account_id.value), s = a.sender;
+    $('#gsfFrom').innerHTML = s.city && s.name && s.phone && s.street ? `${esc(s.name)} · ${esc(s.phone)} · ${esc(s.street)}` : '<span class="out">Tài khoản này chưa đủ địa chỉ lấy hàng (tên, SĐT, địa chỉ, khu vực). Quản trị viên cần khai báo ở phần Tài khoản Goship.</span>';
+    locPicker($('#gsfLoc'), a.id);
+  };
+  f.account_id.onchange = setAcc; setAcc();
+  $('#gsfC').onclick = () => d.close();
+  const payload = () => ({
+    account_id: Number(f.account_id.value), payer: Number(f.payer.value), order_id: f.order_id.value || undefined,
+    address_to: { name:f.to_name.value, phone:f.to_phone.value, street:f.to_street.value, ...locValue($('#gsfLoc')) },
+    parcel: { weight:f.weight.value, length:f.length.value, width:f.width.value, height:f.height.value, cod:f.cod.value, amount:f.amount.value, metadata:f.metadata.value || undefined },
+  });
+  $('#gsfRate').onclick = async () => {
+    if (!f.reportValidity()) return;
+    const box = $('#gsfRates'); box.innerHTML = '<span class="small">Đang tra cước…</span>';
+    try {
+      const rates = await api('/goship/rates', { method:'POST', body:payload() });
+      box.innerHTML = rates.length ? `<table><thead><tr><th></th><th>Hãng</th><th>Dịch vụ</th><th>Dự kiến</th><th class="r">Phí ship</th><th class="r">Phí COD</th><th class="r">Tổng</th></tr></thead><tbody>${rates.map((r, i) => `<tr>
+          <td><input type="radio" name="gsRate" value="${i}" ${i === 0 ? 'checked' : ''}></td><td>${r.carrier_logo ? `<img src="${esc(r.carrier_logo)}" alt="" style="height:18px;vertical-align:middle"> ` : ''}${esc(r.carrier_name)}</td>
+          <td>${esc(r.service || '')}</td><td class="small">${esc(r.expected || '')}</td><td class="r">${fmt(r.total_fee)}</td><td class="r">${fmt(r.cod_fee)}</td><td class="r"><b>${fmt(r.total_amount)}</b></td></tr>`).join('')}</tbody></table>
+          <div class="row" style="margin-top:10px"><button class="btn" id="gsfCreate">Tạo vận đơn với hãng đã chọn</button><span class="small" id="gsfMsg"></span></div>`
+        : '<span class="small">Không có hãng nào nhận tuyến này.</span>';
+      const btn = $('#gsfCreate');
+      if (btn) btn.onclick = async () => {
+        const r = rates[Number($('input[name=gsRate]:checked').value)];
+        btn.disabled = true; $('#gsfMsg').textContent = 'Đang tạo…';
+        try {
+          const s = await api('/goship/shipments', { method:'POST', body:{ ...payload(), rate:r.rate, service:`${r.carrier_name} ${r.service || ''}`.trim() } });
+          d.close(); toast(s.duplicate ? `Mã đơn này đã có vận đơn ${s.gcode}` : `Đã tạo vận đơn ${s.gcode}`); gsPage = 1; loadGoship();
+        } catch (e) { btn.disabled = false; $('#gsfMsg').textContent = e.message; }
+      };
+    } catch (e) { box.innerHTML = `<span class="small out">${esc(e.message)}</span>`; }
+  };
+};
+
 // ---------------------------------------------------------------- API key
 function acctChecks(selected = []) {
   return accounts.map((a) => `<label class="small" style="white-space:nowrap"><input type="checkbox" value="${esc(a.account_number)}" ${selected.includes(a.account_number) ? 'checked' : ''}> ${esc(a.bank || '')} ${esc(a.account_number)}</label>`).join(' ') || '<span class="small">Chưa có tài khoản ngân hàng</span>';
@@ -584,9 +782,12 @@ function acctChecks(selected = []) {
 async function loadKeys() {
   accounts = await api('/accounts');
   $('#kAccts').innerHTML = acctChecks() + '<span class="small">Không chọn = tất cả tài khoản</span>';
+  const gal = await api('/goship/accounts').catch(() => []);
+  $('#kGsAccts').innerHTML = gal.map((a) => `<label class="small" style="white-space:nowrap"><input type="checkbox" value="${a.id}"> #${a.id} ${esc(a.name)}</label>`).join(' ') + '<span class="small">Không chọn = mọi tài khoản Goship</span>';
+  $('#kGs').onchange = () => $$('.kGsRow').forEach((el) => el.classList.toggle('hidden', !$('#kGs').checked));
   $('#docsLink').textContent = location.origin + '/docs';
   const keys = await api('/api-keys');
-  $('#kBody').innerHTML = keys.map((k) => `<tr><td>${esc(k.name)}</td><td><code>${esc(k.key_prefix)}…</code></td><td>${k.scopes.includes('write') ? 'Đọc + tạo yêu cầu thu' : 'Chỉ đọc'}</td>
+  $('#kBody').innerHTML = keys.map((k) => `<tr><td>${esc(k.name)}</td><td><code>${esc(k.key_prefix)}…</code></td><td>${k.scopes.includes('write') ? 'Đọc + tạo yêu cầu thu' : 'Chỉ đọc'}${k.scopes.includes('goship') ? '<br><span class="small">+ Goship' + (k.goship_accounts ? ' (TK #' + esc(k.goship_accounts.split(',').join(', #')) + ')' : ' (mọi TK)') + '</span>' : ''}</td>
     <td class="small">${esc(k.accounts ? k.accounts.split(',').join(', ') : 'Tất cả')}</td><td class="small">${esc(k.created_at)}</td><td class="small">${esc(k.last_used_at || 'Chưa dùng')}</td>
     <td>${k.active ? '<span class="pill" style="background:var(--in)">Hoạt động</span>' : '<span class="pill" style="background:#94a3b8">Đã thu hồi</span>'}</td>
     <td>${k.active ? `<button class="btn danger" data-krevoke="${k.id}">Thu hồi</button>` : `<button class="btn ghost" data-kdel="${k.id}">Xoá</button>`}</td></tr>`).join('') || '<tr><td colspan="8" class="small">Chưa cấp API key nào</td></tr>';
@@ -596,12 +797,12 @@ async function loadKeys() {
 $('#kForm').onsubmit = async (e) => {
   e.preventDefault();
   const f = e.target;
-  const r = await api('/api-keys', { method:'POST', body:{ name:f.name.value, write:f.write.checked, accounts:$$('#kAccts input:checked').map((i) => i.value) } });
+  const r = await api('/api-keys', { method:'POST', body:{ name:f.name.value, write:f.write.checked, accounts:$$('#kAccts input:checked').map((i) => i.value), goship:f.goship.checked, goship_accounts:$$('#kGsAccts input:checked').map((i) => i.value) } });
   $('#kNew').classList.remove('hidden');
   $('#kNew').innerHTML = `<b>API key cho ${esc(r.name)}</b> (chỉ hiện một lần, hãy sao chép ngay):<div class="row" style="margin-top:6px"><code id="kVal" style="word-break:break-all">${esc(r.key)}</code><button class="btn ghost" type="button" id="kCopy">Sao chép</button></div>
     <p class="small">Gửi cho đối tác kèm tài liệu: ${esc(location.origin)}/docs</p>`;
   $('#kCopy').onclick = () => copy(r.key);
-  f.reset(); loadKeys();
+  f.reset(); $$('.kGsRow').forEach((el) => el.classList.add('hidden')); loadKeys();
 };
 
 // ---------------------------------------------------------------- quản trị

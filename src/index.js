@@ -3,6 +3,9 @@
 // - Đối soát định kỳ qua SePay API v2 để không sót giao dịch
 // - API cho giao diện: tổng quan, giao dịch, danh mục, quy tắc, thu tiền QR, người dùng
 
+import { HttpError, json, body, all, first, run, enc, toHex, mask, timingSafeEqual } from './lib.js';
+import * as gs from './goship.js';
+
 const SEPAY_BASE = {
   production: 'https://userapi.sepay.vn/v2',
   sandbox: 'https://userapi-sandbox.sepay.vn/v2',
@@ -50,19 +53,6 @@ async function getConnection(env, id) {
   return first(env, 'SELECT * FROM sepay_connections WHERE id=?', id);
 }
 
-class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-
-function json(data, status = 200, headers = {}) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
-  });
-}
 
 // ---------------------------------------------------------------- router
 async function handleApi(request, env, ctx, url) {
@@ -72,6 +62,8 @@ async function handleApi(request, env, ctx, url) {
   // Webhook SePay: công khai, tự xác thực bằng chữ ký. /api/sepay/webhook (không số) = kết nối đầu tiên
   let wm;
   if (m === 'POST' && (wm = p.match(/^\/api\/sepay\/webhook(?:\/(\d+))?$/))) return handleWebhook(request, env, wm[1] ? Number(wm[1]) : null);
+  // Webhook Goship: công khai, xác thực bằng mã bí mật trong URL
+  if (m === 'POST' && (wm = p.match(/^\/api\/goship\/webhook\/(\d+)\/([a-f0-9]{16,64})$/))) return gs.handleGsWebhook(request, env, Number(wm[1]), wm[2]);
 
   // API cho bên thứ 3, xác thực bằng API key
   if (p.startsWith('/api/v1/')) return handleV1(request, env, url);
@@ -110,13 +102,15 @@ async function handleApi(request, env, ctx, url) {
     if (!mm[2] && m === 'PUT') return saveConnection(env, { ...(await body(request)), id }, url);
   }
 
-  if (p === '/api/api-keys' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT id, name, key_prefix, scopes, accounts, active, created_by, created_at, last_used_at FROM api_keys ORDER BY id DESC')); }
+  if (p === '/api/api-keys' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT id, name, key_prefix, scopes, accounts, goship_accounts, active, created_by, created_at, last_used_at FROM api_keys ORDER BY id DESC')); }
   if (p === '/api/api-keys' && m === 'POST') { need('admin'); return createApiKey(env, await body(request), user); }
   if ((mm = p.match(/^\/api\/api-keys\/(\d+)$/))) {
     need('admin');
     if (m === 'PATCH') { const b = await body(request); await run(env, 'UPDATE api_keys SET active=? WHERE id=?', b.active ? 1 : 0, Number(mm[1])); return json({ ok: true }); }
     if (m === 'DELETE') { await run(env, 'DELETE FROM api_keys WHERE id=?', Number(mm[1])); return json({ ok: true }); }
   }
+
+  if (p.startsWith('/api/goship/')) return handleGoship(request, env, url, user, need);
 
   if (p === '/api/summary' && m === 'GET') return summary(env, url, scope);
 
@@ -183,12 +177,6 @@ async function handleApi(request, env, ctx, url) {
   throw new HttpError(404, 'Không tìm thấy');
 }
 
-async function body(request) {
-  try { return await request.json(); } catch { throw new HttpError(400, 'Body JSON không hợp lệ'); }
-}
-const all = async (env, sql, ...args) => (await env.DB.prepare(sql).bind(...args).all()).results;
-const first = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).first();
-const run = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).run();
 
 // ---------------------------------------------------------------- webhook
 async function handleWebhook(request, env, connId) {
@@ -636,7 +624,6 @@ async function saveSettings(env, b) {
 }
 
 // ---------------------------------------------------------------- quản lý kết nối SePay
-const mask = (v) => (v ? '••••' + String(v).slice(-4) : '');
 async function connectionsView(env, url) {
   const conns = await listConnections(env);
   const out = [];
@@ -696,12 +683,13 @@ const sha256Hex = async (s) => toHex(await crypto.subtle.digest('SHA-256', enc.e
 async function createApiKey(env, b, user) {
   const name = String(b.name || '').trim();
   if (!name) throw new HttpError(400, 'Cần đặt tên cho API key (vd tên đối tác)');
-  const scopes = b.write ? 'read,write' : 'read';
+  const scopes = ['read', ...(b.write ? ['write'] : []), ...(b.goship ? ['goship'] : [])].join(',');
   const accounts = Array.isArray(b.accounts) && b.accounts.length ? b.accounts.map(String).join(',') : null;
+  const goshipAccounts = b.goship && Array.isArray(b.goship_accounts) && b.goship_accounts.length ? b.goship_accounts.map((x) => String(Number(x))).join(',') : null;
   const key = 'tc_' + toHex(crypto.getRandomValues(new Uint8Array(24)));
-  await run(env, 'INSERT INTO api_keys (name, key_prefix, key_hash, scopes, accounts, created_by) VALUES (?,?,?,?,?,?)',
-    name, key.slice(0, 10), await sha256Hex(key), scopes, accounts, user.username);
-  return json({ key, name, scopes, accounts, note: 'Key chỉ hiện một lần. Lưu lại ngay.' });
+  await run(env, 'INSERT INTO api_keys (name, key_prefix, key_hash, scopes, accounts, goship_accounts, created_by) VALUES (?,?,?,?,?,?,?)',
+    name, key.slice(0, 10), await sha256Hex(key), scopes, accounts, goshipAccounts, user.username);
+  return json({ key, name, scopes, accounts, goship_accounts: goshipAccounts, note: 'Key chỉ hiện một lần. Lưu lại ngay.' });
 }
 
 // ---------------------------------------------------------------- API v1 công khai (xem /docs)
@@ -751,6 +739,7 @@ async function handleV1(request, env, url) {
     if (p === '/categories' && m === 'GET') {
       return json({ status: 'success', data: await all(env, 'SELECT id, name, type FROM categories ORDER BY type, sort, name') });
     }
+    if (p.startsWith('/goship/')) return await handleV1Goship(request, env, url, k, p.slice('/goship'.length), m);
     if (p === '/payment-requests' && m === 'POST') {
       if (!canWrite) return v1err(403, 'forbidden', 'API key này chỉ có quyền đọc');
       const b = await body(request);
@@ -768,10 +757,96 @@ async function handleV1(request, env, url) {
     }
     return v1err(404, 'not_found', 'Endpoint không tồn tại. Xem tài liệu tại /docs');
   } catch (e) {
-    if (e instanceof HttpError) return v1err(e.status, 'invalid_request', e.message);
+    if (e instanceof HttpError) return v1err(e.status, ({ 403: 'forbidden', 404: 'not_found', 429: 'rate_limited', 502: 'upstream_error' })[e.status] || 'invalid_request', e.message);
     throw e;
   }
 }
+// ---------------------------------------------------------------- Goship (giao diện)
+async function handleGoship(request, env, url, user, need) {
+  const p = url.pathname.slice('/api/goship'.length);
+  const m = request.method;
+  const q = url.searchParams;
+  let mm;
+  if (p === '/accounts' && m === 'GET') { need('editor'); return json(await gs.gsAccountsView(env, url, ROLE_LEVEL[user.role] >= ROLE_LEVEL.admin)); }
+  if (p === '/accounts' && m === 'POST') { need('admin'); return gs.saveGsAccount(env, await body(request), url); }
+  if ((mm = p.match(/^\/accounts\/(\d+)(\/test|\/webhook|\/sync)?$/))) {
+    const id = Number(mm[1]);
+    if (!mm[2] && m === 'PUT') { need('admin'); return gs.saveGsAccount(env, { ...(await body(request)), id }, url); }
+    if (mm[2] === '/test' && m === 'POST') { need('admin'); return json(await gs.testGsAccount(env, id)); }
+    if (mm[2] === '/webhook' && m === 'POST') { need('admin'); return json(await gs.registerGsWebhook(env, id, url)); }
+    if (mm[2] === '/sync' && m === 'POST') { need('editor'); return json(await gs.gsSyncAccount(env, id)); }
+  }
+  if ((mm = p.match(/^\/locations\/(cities|districts|wards)$/)) && m === 'GET') {
+    need('editor');
+    return json(await gs.gsLocations(env, await gs.pickAccount(env, q.get('account')), mm[1], q.get('code')));
+  }
+  if (p === '/rates' && m === 'POST') { need('editor'); const b = await body(request); return json(await gs.gsRates(env, await gs.pickAccount(env, b.account_id), b)); }
+  if (p === '/shipments' && m === 'POST') {
+    need('editor');
+    const b = await body(request);
+    return json(await gs.gsCreateShipment(env, await gs.pickAccount(env, b.account_id), b, 'web:' + user.username), 201);
+  }
+  if (p === '/shipments' && m === 'GET') {
+    need('editor');
+    const r = await gs.listShipments(env, Object.fromEntries(['account', 'status', 'q', 'from', 'to', 'page', 'per_page'].map((k) => [k, q.get(k) || undefined])));
+    return json({ data: r.rows, total: r.total, page: r.page, per_page: r.per });
+  }
+  if ((mm = p.match(/^\/shipments\/([A-Za-z0-9_-]+)(\/refresh)?$/))) {
+    need('editor');
+    const s = await first(env, 'SELECT * FROM goship_shipments WHERE gcode=?', mm[1]);
+    if (!s) throw new HttpError(404, 'Không có vận đơn');
+    if (mm[2] && m === 'POST') return json(await gs.gsRefresh(env, s));
+    if (!mm[2] && m === 'GET') return json(s);
+    if (!mm[2] && m === 'DELETE') return json(await gs.gsCancel(env, s));
+  }
+  if (p === '/webhook-log' && m === 'GET') {
+    need('admin');
+    const id = q.get('account');
+    return json(id ? await all(env, 'SELECT * FROM goship_webhook_log WHERE account_id=? ORDER BY id DESC LIMIT 30', Number(id)) : await all(env, 'SELECT * FROM goship_webhook_log ORDER BY id DESC LIMIT 30'));
+  }
+  if (p === '/statuses' && m === 'GET') return json(gs.GS_STATUS);
+  throw new HttpError(404, 'Không tìm thấy');
+}
+
+// ---------------------------------------------------------------- Goship (API v1 cho bên thứ 3)
+async function handleV1Goship(request, env, url, k, p, m) {
+  if (!k.scopes.split(',').includes('goship')) return v1err(403, 'forbidden', 'API key này chưa được cấp quyền Goship');
+  const allowed = k.goship_accounts ? k.goship_accounts.split(',') : null;
+  const q = url.searchParams;
+  let mm;
+  if (p === '/accounts' && m === 'GET') {
+    const list = (await gs.gsAccountsView(env, url, false)).filter((a) => a.active && (!allowed || allowed.includes(String(a.id))));
+    return json({ status: 'success', data: list.map((a) => ({ id: a.id, name: a.name, env: a.env, sender: a.sender })) });
+  }
+  if (p === '/statuses' && m === 'GET') return json({ status: 'success', data: Object.entries(gs.GS_STATUS).map(([code, text]) => ({ code: Number(code), text })) });
+  if (p === '/cities' && m === 'GET') return json({ status: 'success', data: await gs.gsLocations(env, await gs.pickAccount(env, q.get('account_id'), allowed), 'cities') });
+  if ((mm = p.match(/^\/cities\/(\d+)\/districts$/)) && m === 'GET') return json({ status: 'success', data: await gs.gsLocations(env, await gs.pickAccount(env, q.get('account_id'), allowed), 'districts', mm[1]) });
+  if ((mm = p.match(/^\/districts\/(\d+)\/wards$/)) && m === 'GET') return json({ status: 'success', data: await gs.gsLocations(env, await gs.pickAccount(env, q.get('account_id'), allowed), 'wards', mm[1]) });
+  if (p === '/rates' && m === 'POST') {
+    const b = await body(request);
+    return json({ status: 'success', data: await gs.gsRates(env, await gs.pickAccount(env, b.account_id, allowed), b) });
+  }
+  if (p === '/shipments' && m === 'POST') {
+    const b = await body(request);
+    const s = await gs.gsCreateShipment(env, await gs.pickAccount(env, b.account_id, allowed), b, 'api:' + k.name, k.id);
+    if (s.duplicate && s.api_key_id !== k.id) return v1err(409, 'conflict', 'order_id này đã có vận đơn do nguồn khác tạo');
+    return json({ status: 'success', data: gs.v1Shipment(s) }, s.duplicate ? 200 : 201);
+  }
+  if (p === '/shipments' && m === 'GET') {
+    const r = await gs.listShipments(env, { accounts: allowed, apiKeyId: k.id, account: q.get('account_id') || undefined, status: q.get('status') || undefined,
+      order_id: q.get('order_id') || undefined, from: q.get('from') || undefined, to: q.get('to') || undefined, updated_since: q.get('updated_since') || undefined,
+      page: q.get('page') || 1, per_page: q.get('per_page') || 50 });
+    return json({ status: 'success', data: r.rows.map(gs.v1Shipment), meta: { pagination: { total: r.total, per_page: r.per, current_page: r.page, last_page: Math.max(1, Math.ceil(r.total / r.per)), has_more: r.page * r.per < r.total } } });
+  }
+  if ((mm = p.match(/^\/shipments\/([A-Za-z0-9_-]+)$/))) {
+    let s = await first(env, 'SELECT * FROM goship_shipments WHERE gcode=? AND api_key_id=?', mm[1], k.id);
+    if (!s) return v1err(404, 'not_found', 'Không tìm thấy vận đơn (chỉ xem được vận đơn do API key này tạo)');
+    if (m === 'GET') { if (q.get('refresh') === '1') s = await gs.gsRefresh(env, s); return json({ status: 'success', data: gs.v1Shipment(s) }); }
+    if (m === 'DELETE') return json({ status: 'success', data: gs.v1Shipment(await gs.gsCancel(env, s)) });
+  }
+  return v1err(404, 'not_found', 'Endpoint Goship không tồn tại. Xem tài liệu tại /docs#goship');
+}
+
 function v1Txn(t) {
   return { id: t.id, transaction_date: t.txn_date, account_number: t.account_number, bank: t.bank, transfer_type: t.type, amount: t.amount,
     content: t.content, code: t.code, reference_code: t.reference_code, balance_after: t.accumulated, category_id: t.category_id,
@@ -847,20 +922,12 @@ async function changePassword(env, user, b) {
 }
 
 // ---------------------------------------------------------------- crypto helpers
-const enc = new TextEncoder();
-const toHex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const b64u = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64u = (s) => atob(s.replace(/-/g, '+').replace(/_/g, '/'));
 
 export async function hmacHex(secret, data) {
   const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return toHex(await crypto.subtle.sign('HMAC', key, enc.encode(data)));
-}
-function timingSafeEqual(a, b) {
-  a = String(a); b = String(b);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
-  return diff === 0;
 }
 async function signSession(env, payload) {
   const { sessionSecret } = await cfg(env);

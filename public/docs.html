@@ -33,7 +33,7 @@
 <body>
 <header>
   <h1>Tài liệu API Thu chi · v1</h1>
-  <p>Đọc giao dịch ngân hàng, số dư, báo cáo thu chi và tạo yêu cầu thu tiền bằng VietQR. Dữ liệu được đồng bộ tự động từ SePay.</p>
+  <p>Đọc giao dịch ngân hàng, số dư, báo cáo thu chi, tạo yêu cầu thu tiền bằng VietQR, và tạo, theo dõi vận đơn qua Goship.</p>
 </header>
 <div class="wrap">
 <nav>
@@ -43,6 +43,9 @@
   <a href="#transactions">Danh sách giao dịch</a><a href="#transaction">Chi tiết giao dịch</a><a href="#polling">Lấy giao dịch mới (polling)</a>
   <a href="#summary">Tổng hợp thu chi</a><a href="#accounts">Tài khoản ngân hàng</a><a href="#categories">Danh mục</a>
   <a href="#pr-create">Tạo yêu cầu thu tiền</a><a href="#pr-get">Trạng thái yêu cầu thu</a>
+  <div class="grp">Vận chuyển Goship</div>
+  <a href="#goship">Tổng quan Goship</a><a href="#gs-accounts">Tài khoản Goship</a><a href="#gs-locations">Địa giới</a><a href="#gs-rates">Tra cước</a>
+  <a href="#gs-create">Tạo vận đơn</a><a href="#gs-shipment">Đối tượng vận đơn</a><a href="#gs-list">Theo dõi, huỷ, trạng thái</a>
   <div class="grp">Khác</div>
   <a href="#samples">Code mẫu</a><a href="#limits">Giới hạn &amp; lưu ý</a>
 </nav>
@@ -79,6 +82,10 @@
     <tr><td>401</td><td>unauthorized</td><td>Thiếu API key, key sai hoặc đã bị thu hồi</td></tr>
     <tr><td>403</td><td>forbidden</td><td>Key không có quyền thao tác này hoặc tài khoản này</td></tr>
     <tr><td>404</td><td>not_found</td><td>Không tìm thấy tài nguyên</td></tr>
+    <tr><td>409</td><td>conflict</td><td>Trùng dữ liệu, vd <code>order_id</code> vận đơn đã thuộc nguồn khác</td></tr>
+    <tr><td>422</td><td>invalid_request</td><td>Dữ liệu vận đơn thiếu hoặc sai</td></tr>
+    <tr><td>429</td><td>rate_limited</td><td>Goship báo vượt giới hạn, thử lại sau ít phút</td></tr>
+    <tr><td>502</td><td>upstream_error</td><td>Goship hoặc hãng vận chuyển trả lỗi, xem <code>message</code></td></tr>
   </table>
 <pre><code>{ "status": "error", "error_code": "unauthorized", "message": "API key không hợp lệ hoặc đã bị thu hồi" }</code></pre>
 </section>
@@ -216,6 +223,124 @@
   <p><code>status</code>: <code>pending</code> (chờ thu), <code>paid</code> (đã thu đủ), <code>cancelled</code> (đã huỷ). <code>paid_amount</code> cộng dồn nếu khách chuyển nhiều lần.</p>
 </section>
 
+<section id="goship">
+  <h2>Vận chuyển Goship</h2>
+  <p>Hệ thống kết nối với một hoặc nhiều tài khoản Goship. Qua các endpoint dưới đây, phần mềm của bạn tra cước của các hãng (GHN, GHTK, Viettel Post, J&amp;T, Best, SPX…), tạo vận đơn, theo dõi trạng thái và huỷ đơn, mà không cần giữ Access Token Goship.</p>
+  <p class="note">Cần API key có quyền <b>Goship</b>. Key có thể bị giới hạn chỉ dùng một số tài khoản Goship. Mỗi key chỉ xem và huỷ được vận đơn do chính key đó tạo.</p>
+  <p>Luồng chuẩn: lấy mã địa giới (tỉnh, quận, phường) → <b>tra cước</b> → chọn một <code>rate</code> → <b>tạo vận đơn</b> → theo dõi trạng thái bằng polling <code>updated_since</code>.</p>
+  <p>Mọi endpoint Goship nhận tham số tuỳ chọn <code>account_id</code> (query hoặc body) để chọn tài khoản Goship. Bỏ trống thì dùng tài khoản đầu tiên key được phép dùng.</p>
+</section>
+
+<section id="gs-accounts">
+  <h3>Tài khoản Goship được dùng</h3>
+  <div class="ep"><span class="m get">GET</span>/api/v1/goship/accounts</div>
+<pre><code>{ "status": "success", "data": [ { "id": 1, "name": "Shop FarmBase", "env": "production",
+  "sender": { "name": "BVI", "phone": "0912345678", "street": "195 Thạch Bàn", "city": "100000", "district": "100900", "ward": "108" } } ] }</code></pre>
+  <p><code>sender</code> là địa chỉ lấy hàng mặc định của tài khoản, được dùng khi bạn không gửi <code>address_from</code>.</p>
+</section>
+
+<section id="gs-locations">
+  <h3>Địa giới hành chính</h3>
+  <div class="ep"><span class="m get">GET</span>/api/v1/goship/cities</div>
+  <div class="ep" style="margin-top:6px"><span class="m get">GET</span>/api/v1/goship/cities/{city_id}/districts</div>
+  <div class="ep" style="margin-top:6px"><span class="m get">GET</span>/api/v1/goship/districts/{district_id}/wards</div>
+<pre><code>{ "status": "success", "data": [ { "id": "100000", "name": "Hà Nội" }, { "id": "700000", "name": "Hồ Chí Minh" } ] }</code></pre>
+  <p>Mã địa giới là mã của Goship, dùng cho tra cước và tạo đơn. Dữ liệu ít thay đổi, nên lưu đệm ở phía bạn.</p>
+</section>
+
+<section id="gs-rates">
+  <h3>Tra cước</h3>
+  <div class="ep"><span class="m post">POST</span>/api/v1/goship/rates</div>
+  <table><tr><th>Trường body</th><th>Kiểu</th><th>Mô tả</th></tr>
+    <tr><td>account_id</td><td>integer</td><td>Tài khoản Goship, tuỳ chọn</td></tr>
+    <tr><td>address_from</td><td>object</td><td><code>city</code>, <code>district</code>, <code>ward</code>. Bỏ trống để dùng địa chỉ lấy hàng mặc định</td></tr>
+    <tr><td>address_to</td><td>object, bắt buộc</td><td><code>city</code>, <code>district</code> bắt buộc; <code>ward</code> nên có</td></tr>
+    <tr><td>parcel.weight</td><td>number, bắt buộc</td><td>Cân nặng, gram</td></tr>
+    <tr><td>parcel.length, width, height</td><td>number</td><td>Kích thước, cm. Mặc định 10</td></tr>
+    <tr><td>parcel.cod</td><td>integer</td><td>Tiền thu hộ, mặc định 0</td></tr>
+    <tr><td>parcel.amount</td><td>integer</td><td>Giá trị khai giá, dùng tính bảo hiểm</td></tr>
+  </table>
+<pre><code>curl -X POST "<span class="base">https://YOUR-DOMAIN</span>/api/v1/goship/rates" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"address_to":{"city":"100000","district":"100300","ward":"19"},"parcel":{"weight":500,"cod":200000,"amount":200000}}'</code></pre>
+<pre><code>{ "status": "success", "data": [
+  { "rate": "MTFfMjJfNjgzOQ==", "carrier_name": "Viettel Post", "carrier_short_name": "vtp", "service": "Tiết kiệm",
+    "expected": "Dự kiến giao 5 ngày", "total_fee": 17000, "total_amount": 17000, "cod_fee": 0, "insurance_fee": 0,
+    "return_fee": 9000, "own_account": 0, "report": { "success_percent": 88.6, "return_percent": 11.4 } } ] }</code></pre>
+  <p>Kết quả được sắp xếp từ rẻ đến đắt theo <code>total_fee</code>. Giữ lại <code>rate</code> của lựa chọn để tạo đơn.</p>
+</section>
+
+<section id="gs-create">
+  <h3>Tạo vận đơn</h3>
+  <div class="ep"><span class="m post">POST</span>/api/v1/goship/shipments</div>
+  <table><tr><th>Trường body</th><th>Kiểu</th><th>Mô tả</th></tr>
+    <tr><td>rate</td><td>string, bắt buộc</td><td>Lấy từ tra cước</td></tr>
+    <tr><td>address_to</td><td>object, bắt buộc</td><td><code>name</code>, <code>phone</code>, <code>street</code>, <code>city</code>, <code>district</code>, <code>ward</code></td></tr>
+    <tr><td>parcel</td><td>object, bắt buộc</td><td>Như khi tra cước, thêm <code>metadata</code> (ghi chú cho bưu tá)</td></tr>
+    <tr><td>order_id</td><td>string</td><td>Mã đơn của bạn. Gửi lại cùng <code>order_id</code> sẽ nhận lại vận đơn cũ thay vì tạo trùng</td></tr>
+    <tr><td>payer</td><td>integer</td><td><code>1</code> shop trả phí (mặc định), <code>0</code> người nhận trả</td></tr>
+    <tr><td>address_from</td><td>object</td><td>Bỏ trống để dùng địa chỉ lấy hàng mặc định</td></tr>
+    <tr><td>account_id</td><td>integer</td><td>Phải là tài khoản đã dùng để tra cước</td></tr>
+  </table>
+<pre><code>curl -X POST "<span class="base">https://YOUR-DOMAIN</span>/api/v1/goship/shipments" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"rate":"MTFfMjJfNjgzOQ==","order_id":"DH-1024","payer":1,
+       "address_to":{"name":"Nguyen Van A","phone":"0909876543","street":"51 Le Dai Hanh","city":"100000","district":"100300","ward":"19"},
+       "parcel":{"weight":500,"cod":200000,"amount":200000,"metadata":"Cho xem hang"}}'</code></pre>
+  <p>HTTP 201 khi tạo mới, 200 kèm <code>"duplicate": true</code> khi <code>order_id</code> đã có vận đơn, 409 nếu <code>order_id</code> đó thuộc nguồn khác.</p>
+</section>
+
+<section id="gs-shipment">
+  <h3>Đối tượng vận đơn</h3>
+<pre><code>{ "gcode": "GSL9VBJ2Y6", "account_id": 1, "order_id": "DH-1024", "carrier": "Viettel Post", "carrier_short_name": "vtp",
+  "carrier_code": "GA6NWFXL", "service": null, "payer": 1, "cod": 200000, "fee": 17000, "amount_return_shop": 183000,
+  "weight": 500, "status": 901, "status_text": "Chờ lấy hàng", "status_desc": null, "tracking_url": null, "sorting_code": "HN01-01-02",
+  "is_return": 0, "is_lost": 0, "receiver": { "name": "Nguyen Van A", "phone": "0909876543", "address": "51 Le Dai Hanh, 19, 100300, 100000" },
+  "carrier_error": null, "created_at": "2026-11-11 07:00:00", "updated_at": "2026-11-11 07:00:00" }</code></pre>
+  <table><tr><th>Trường</th><th>Mô tả</th></tr>
+    <tr><td>gcode</td><td>Mã vận đơn Goship, dùng cho các endpoint bên dưới</td></tr>
+    <tr><td>carrier_code</td><td>Mã vận đơn của hãng vận chuyển</td></tr>
+    <tr><td>fee</td><td>Phí vận chuyển</td></tr>
+    <tr><td>amount_return_shop</td><td>Tiền shop nhận khi đối soát (COD trừ phí). Âm nghĩa là shop phải trả thêm</td></tr>
+    <tr><td>status, status_text</td><td>Trạng thái, xem bảng bên dưới</td></tr>
+    <tr><td>carrier_error</td><td>Lỗi hãng trả về nếu tạo đơn thất bại (status 900 hoặc 1000)</td></tr>
+    <tr><td>created_at, updated_at</td><td>UTC</td></tr>
+  </table>
+  <p>Goship tạo vận đơn bất đồng bộ: kết quả cuối cùng và các thay đổi trạng thái về hệ thống qua webhook rồi hiện trong <code>status</code>.</p>
+</section>
+
+<section id="gs-list">
+  <h3>Danh sách và theo dõi vận đơn</h3>
+  <div class="ep"><span class="m get">GET</span>/api/v1/goship/shipments</div>
+  <table><tr><th>Tham số</th><th>Mô tả</th></tr>
+    <tr><td>updated_since</td><td>Chỉ lấy vận đơn thay đổi sau thời điểm này (UTC, <code>YYYY-MM-DD HH:mm:ss</code> hoặc ISO 8601), sắp xếp tăng dần theo <code>updated_at</code></td></tr>
+    <tr><td>status</td><td>Lọc theo mã trạng thái</td></tr>
+    <tr><td>order_id</td><td>Lọc theo mã đơn của bạn</td></tr>
+    <tr><td>from, to</td><td>Ngày tạo, <code>YYYY-MM-DD</code></td></tr>
+    <tr><td>account_id, page, per_page</td><td>Như các API danh sách khác, <code>per_page</code> tối đa 100</td></tr>
+  </table>
+  <p><b>Theo dõi trạng thái:</b> mỗi 1 đến 5 phút gọi <code>updated_since</code> bằng <code>updated_at</code> lớn nhất bạn đã nhận, lặp theo trang tới khi <code>has_more</code> là false.</p>
+  <div class="ep"><span class="m get">GET</span>/api/v1/goship/shipments/{gcode}</div>
+  <p>Thêm <code>?refresh=1</code> để hệ thống hỏi lại Goship ngay trước khi trả kết quả.</p>
+  <div class="ep"><span class="m" style="background:#dc2626">DELETE</span>/api/v1/goship/shipments/{gcode}</div>
+  <p>Huỷ vận đơn trên Goship. Chỉ huỷ được khi hãng chưa lấy hàng. Goship không hỗ trợ sửa vận đơn: muốn sửa, huỷ rồi tạo đơn mới với <code>order_id</code> khác.</p>
+  <div class="ep"><span class="m get">GET</span>/api/v1/goship/statuses</div>
+  <table><tr><th>Mã</th><th>Trạng thái</th><th>Mã</th><th>Trạng thái</th></tr>
+    <tr><td>900</td><td>Đơn mới</td><td>911</td><td>Đã trả COD cho khách</td></tr>
+    <tr><td>901</td><td>Chờ lấy hàng</td><td>912</td><td>Chờ thanh toán COD</td></tr>
+    <tr><td>902</td><td>Lấy hàng</td><td>913</td><td>Hoàn thành</td></tr>
+    <tr><td>903</td><td>Đã lấy hàng</td><td>914</td><td>Đơn hủy</td></tr>
+    <tr><td>904</td><td>Giao hàng</td><td>915</td><td>Chậm lấy/giao</td></tr>
+    <tr><td>905</td><td>Giao thành công</td><td>916</td><td>Giao hàng một phần</td></tr>
+    <tr><td>906</td><td>Giao thất bại</td><td>917</td><td>Thất lạc hàng</td></tr>
+    <tr><td>907</td><td>Đang chuyển hoàn</td><td>918</td><td>Đang lưu kho</td></tr>
+    <tr><td>908</td><td>Chuyển hoàn</td><td>919</td><td>Đang vận chuyển</td></tr>
+    <tr><td>909</td><td>Đã đối soát</td><td>1000</td><td>Đơn lỗi</td></tr>
+    <tr><td>910</td><td>Đã đối soát khách</td><td></td><td></td></tr>
+  </table>
+  <p>Lỗi từ phía Goship trả về HTTP 502 với <code>error_code</code> <code>upstream_error</code>; lỗi dữ liệu (thiếu địa chỉ, cân nặng…) trả 422.</p>
+</section>
+
 <section id="samples">
   <h2>Code mẫu</h2>
   <h3>Node.js</h3>
@@ -253,7 +378,7 @@ print(pr["code"], pr["qr_image_url"])</code></pre>
   <h2>Giới hạn &amp; lưu ý</h2>
   <ul>
     <li>Giao dịch ngân hàng về hệ thống qua webhook SePay trong vài giây; đối soát tự động chạy mỗi 5 phút để bù giao dịch bị sót.</li>
-    <li>Nên gọi API không quá 5 request mỗi giây. Polling 1 đến 5 phút một lần là đủ.</li>
+    <li>Nên gọi API không quá 5 request mỗi giây. Polling 1 đến 5 phút một lần là đủ. Các API Goship còn chịu giới hạn chung 300 request/phút của mỗi tài khoản Goship.</li>
     <li>Không có API sửa hoặc xoá giao dịch ngân hàng: dữ liệu ngân hàng là nguồn gốc để đối soát.</li>
     <li>Nếu nghi lộ API key, báo quản trị viên thu hồi và cấp key mới.</li>
   </ul>

@@ -13,6 +13,8 @@ Webtool quản lý thu chi tự động: mọi giao dịch ngân hàng liên k�
 - **Xuất CSV** (mở được bằng Excel, có BOM UTF-8).
 - **Nhiều kết nối SePay**: mỗi tài khoản SePay (công ty) có API Token, URL webhook `/api/sepay/webhook/<id>` và Secret Key riêng; mọi tài khoản ngân hàng liên kết tự hiện ra.
 - **API cho bên thứ 3**: cấp/thu hồi API key (chỉ đọc hoặc thêm quyền tạo yêu cầu thu, giới hạn theo tài khoản ngân hàng). Tài liệu công khai tại `/docs`.
+- **Vận chuyển Goship**: nhiều tài khoản Goship (mỗi shop một Access Token, địa chỉ lấy hàng và URL webhook `/api/goship/webhook/<id>/<mã bí mật>`). Tra cước nhiều hãng, tạo, tra cứu, huỷ vận đơn; trạng thái tự cập nhật qua webhook Goship, có nút cập nhật tay.
+- **API Goship cho hệ thống khác**: API key có quyền Goship (giới hạn được theo tài khoản Goship) gọi `/api/v1/goship/*` để tra cước, tạo đơn (chống trùng theo `order_id`), theo dõi trạng thái và huỷ đơn.
 - **Người dùng & phân quyền**: Quản trị / Biên tập / Chỉ xem; người “Chỉ xem” có thể giới hạn chỉ thấy một số tài khoản ngân hàng.
 
 ## Cài đặt và deploy
@@ -38,6 +40,13 @@ Sau khi deploy:
 3. Muốn dùng QR thu tiền: khai báo tiền tố mã (mặc định `TT`) ở my.sepay.vn → Cấu hình công ty → Cấu trúc mã thanh toán, và nhập STK nhận tiền ở tab **Quản trị**.
 
 Token và Secret nhập trên giao diện được lưu trong D1, không bao giờ trả về trình duyệt (chỉ hiện 4 ký tự cuối). Nếu muốn, vẫn có thể đặt bằng `wrangler secret put SEPAY_API_TOKEN` / `SEPAY_WEBHOOK_SECRET`; giá trị nhập trên giao diện được ưu tiên.
+
+### Kết nối Goship
+
+1. Tab **Vận chuyển Goship** → **+ Thêm tài khoản Goship**: đặt tên, chọn môi trường, dán Access Token (shop.goship.io → Cài đặt → Kết nối API; Sandbox dùng dev-shop.goship.io).
+2. Nhập người gửi và chọn khu vực lấy hàng, **Lưu**, bấm **Kiểm tra**.
+3. Bấm **Đăng ký lên Goship** để Goship gửi trạng thái vận đơn về URL webhook của tài khoản (Sandbox của Goship không bắn webhook thật).
+4. Muốn cho phần mềm khác tạo đơn: tab **API & tích hợp**, tạo key và tích **Goship**. Tài liệu ở `/docs#goship`.
 
 ### Test mode trước, thật sau
 
@@ -71,7 +80,9 @@ npm test
 
 ```
 src/index.js              Worker: webhook, API, đối soát (cron), phiên đăng nhập
+src/goship.js             Tích hợp Goship: tài khoản, cước, vận đơn, webhook
+src/lib.js                Tiện ích dùng chung
 public/index.html         Giao diện (HTML + JS thuần, không cần build)
-migrations/0001_init.sql  Schema D1 + danh mục mặc định
+migrations/               Schema D1 (0001 khởi tạo … 0004 Goship)
 test/                     Kiểm thử quy tắc phân loại, HMAC
 ```
