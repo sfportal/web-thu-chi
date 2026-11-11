@@ -33,7 +33,7 @@
 <body>
 <header>
   <h1>Tài liệu API Thu chi · v1</h1>
-  <p>Đọc giao dịch ngân hàng, số dư, báo cáo thu chi, tạo yêu cầu thu tiền bằng VietQR, và tạo, theo dõi vận đơn qua Goship.</p>
+  <p>Đọc giao dịch ngân hàng, số dư, báo cáo thu chi, tạo yêu cầu thu tiền bằng VietQR, tạo và theo dõi vận đơn qua Goship, xác minh số điện thoại bằng OTP qua SMS hoặc Zalo.</p>
 </header>
 <div class="wrap">
 <nav>
@@ -46,6 +46,8 @@
   <div class="grp">Vận chuyển Goship</div>
   <a href="#goship">Tổng quan Goship</a><a href="#gs-accounts">Tài khoản Goship</a><a href="#gs-locations">Địa giới</a><a href="#gs-rates">Tra cước</a>
   <a href="#gs-create">Tạo vận đơn</a><a href="#gs-shipment">Đối tượng vận đơn</a><a href="#gs-list">Theo dõi, huỷ, trạng thái</a>
+  <div class="grp">Xác minh SĐT (OTP)</div>
+  <a href="#otp">Tổng quan OTP</a><a href="#otp-accounts">Tài khoản eSMS</a><a href="#otp-send">Gửi mã</a><a href="#otp-verify">Kiểm tra mã</a>
   <div class="grp">Khác</div>
   <a href="#samples">Code mẫu</a><a href="#limits">Giới hạn &amp; lưu ý</a>
 </nav>
@@ -339,6 +341,65 @@
     <tr><td>910</td><td>Đã đối soát khách</td><td></td><td></td></tr>
   </table>
   <p>Lỗi từ phía Goship trả về HTTP 502 với <code>error_code</code> <code>upstream_error</code>; lỗi dữ liệu (thiếu địa chỉ, cân nặng…) trả 422.</p>
+</section>
+
+<section id="otp">
+  <h2>Xác minh số điện thoại (OTP)</h2>
+  <p>Hệ thống sinh mã OTP, gửi tới số điện thoại qua eSMS bằng SMS brandname, Zalo ZNS, hoặc Zalo trước rồi tự chuyển SMS nếu Zalo lỗi, và kiểm tra mã người dùng nhập. Bạn không cần tài khoản eSMS và không phải tự lưu mã.</p>
+  <p class="note">Cần API key có quyền <b>Xác minh SĐT</b>. Key có thể bị giới hạn chỉ dùng một số tài khoản eSMS. Mỗi key chỉ kiểm tra được mã do chính key đó gửi.</p>
+  <p>Luồng chuẩn: <b>gửi mã</b> → giữ <code>request_id</code> → người dùng nhập mã → <b>kiểm tra mã</b> với <code>request_id</code> đó. Chỉ coi số điện thoại là đã xác minh khi nhận <code>"verified": true</code>.</p>
+  <table><tr><th>Giới hạn</th><th>Giá trị</th></tr>
+    <tr><td>Gửi lại cho cùng một số</td><td>Sau tối thiểu 60 giây</td></tr>
+    <tr><td>Số mã mỗi số điện thoại</td><td>Tối đa 5 mã mỗi giờ</td></tr>
+    <tr><td>Nhập sai</td><td>Tối đa 5 lần mỗi mã, sau đó mã bị khoá (<code>locked</code>)</td></tr>
+    <tr><td>Hiệu lực mã</td><td>Theo cấu hình tài khoản eSMS, mặc định 300 giây</td></tr>
+  </table>
+</section>
+
+<section id="otp-accounts">
+  <h3>Tài khoản eSMS được dùng</h3>
+  <div class="ep"><span class="m get">GET</span>/api/v1/otp/accounts</div>
+<pre><code>{ "status": "success", "data": [ { "id": 1, "name": "eSMS BVI", "channels": ["sms", "zalo", "zalo_sms"],
+  "default_channel": "sms", "otp_length": 6, "otp_ttl": 300, "sandbox": false } ] }</code></pre>
+  <p><code>channels</code> là các kênh tài khoản đã cấu hình xong. <code>sandbox: true</code> nghĩa là eSMS nhận yêu cầu nhưng không gửi tin thật.</p>
+</section>
+
+<section id="otp-send">
+  <h3>Gửi mã</h3>
+  <div class="ep"><span class="m post">POST</span>/api/v1/otp/send</div>
+  <table><tr><th>Trường body</th><th>Kiểu</th><th>Mô tả</th></tr>
+    <tr><td>phone</td><td>string, bắt buộc</td><td>Số điện thoại Việt Nam, nhận cả dạng <code>0901888484</code>, <code>+84901888484</code>, <code>84901888484</code></td></tr>
+    <tr><td>channel</td><td>string</td><td><code>sms</code>, <code>zalo</code> hoặc <code>zalo_sms</code> (Zalo trước, lỗi thì SMS). Bỏ trống để dùng kênh mặc định</td></tr>
+    <tr><td>purpose</td><td>string</td><td>Ghi chú mục đích, vd <code>dang_ky</code>, <code>doi_mat_khau</code></td></tr>
+    <tr><td>account_id</td><td>integer</td><td>Tài khoản eSMS, tuỳ chọn</td></tr>
+  </table>
+<pre><code>curl -X POST "<span class="base">https://YOUR-DOMAIN</span>/api/v1/otp/send" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"phone":"0901888484","channel":"zalo_sms","purpose":"dang_ky"}'</code></pre>
+<pre><code>{ "status": "success", "data": {
+  "request_id": "otp3f9a0c1e5b7d4a2e8c6b1f0d9e7a5c3b", "account_id": 1, "phone": "0901888484", "phone_masked": "090****484",
+  "channel": "zalo_sms", "purpose": "dang_ky", "status": "sent", "attempts": 0, "delivery": null, "send_error": null,
+  "created_at": "2026-11-11 07:30:00", "expires_at": "2026-11-11 07:35:00", "verified_at": null } }</code></pre>
+  <p>HTTP 201 khi eSMS nhận yêu cầu. 429 khi vượt giới hạn gửi; 422 khi số điện thoại sai hoặc kênh chưa cấu hình; 502 khi eSMS từ chối (vd hết số dư, brandname chưa đăng ký), <code>message</code> ghi rõ lý do. Mã OTP không bao giờ được trả về qua API.</p>
+</section>
+
+<section id="otp-verify">
+  <h3>Kiểm tra mã</h3>
+  <div class="ep"><span class="m post">POST</span>/api/v1/otp/verify</div>
+<pre><code>curl -X POST "<span class="base">https://YOUR-DOMAIN</span>/api/v1/otp/verify" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"request_id":"otp3f9a0c1e5b7d4a2e8c6b1f0d9e7a5c3b","code":"482913"}'</code></pre>
+<pre><code>{ "status": "success", "data": { "verified": true, "status": "verified", "phone": "0901888484", "attempts_left": 4, "message": "Xác minh thành công" } }
+{ "status": "success", "data": { "verified": false, "status": "sent", "attempts_left": 3, "message": "Mã không đúng, còn 3 lần thử" } }</code></pre>
+  <table><tr><th>status</th><th>Ý nghĩa</th></tr>
+    <tr><td>sent</td><td>Mã đã gửi, chưa xác minh</td></tr>
+    <tr><td>verified</td><td>Đã xác minh đúng</td></tr>
+    <tr><td>expired</td><td>Mã hết hạn, cần gửi mã mới</td></tr>
+    <tr><td>locked</td><td>Nhập sai quá 5 lần, cần gửi mã mới</td></tr>
+    <tr><td>failed</td><td>eSMS không nhận yêu cầu gửi</td></tr>
+  </table>
+  <div class="ep"><span class="m get">GET</span>/api/v1/otp/{request_id}</div>
+  <p>Xem trạng thái một lượt gửi. Trường <code>delivery</code> là <code>delivered</code> hoặc <code>failed</code> khi eSMS báo tin đã tới hoặc không tới máy người nhận.</p>
 </section>
 
 <section id="samples">

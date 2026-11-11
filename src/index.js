@@ -5,6 +5,7 @@
 
 import { HttpError, json, body, all, first, run, enc, toHex, mask, timingSafeEqual } from './lib.js';
 import * as gs from './goship.js';
+import * as es from './esms.js';
 
 const SEPAY_BASE = {
   production: 'https://userapi.sepay.vn/v2',
@@ -65,6 +66,9 @@ async function handleApi(request, env, ctx, url) {
   // Webhook Goship: công khai, xác thực bằng mã bí mật trong URL
   if (m === 'POST' && (wm = p.match(/^\/api\/goship\/webhook\/(\d+)\/([a-f0-9]{16,64})$/))) return gs.handleGsWebhook(request, env, Number(wm[1]), wm[2]);
 
+  // Callback trạng thái tin nhắn eSMS (GET), xác thực bằng mã bí mật trong URL
+  if ((wm = p.match(/^\/api\/esms\/callback\/(\d+)\/([a-f0-9]{16,64})$/))) return es.handleEsmsCallback(request, env, url, Number(wm[1]), wm[2]);
+
   // API cho bên thứ 3, xác thực bằng API key
   if (p.startsWith('/api/v1/')) return handleV1(request, env, url);
 
@@ -102,7 +106,7 @@ async function handleApi(request, env, ctx, url) {
     if (!mm[2] && m === 'PUT') return saveConnection(env, { ...(await body(request)), id }, url);
   }
 
-  if (p === '/api/api-keys' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT id, name, key_prefix, scopes, accounts, goship_accounts, active, created_by, created_at, last_used_at FROM api_keys ORDER BY id DESC')); }
+  if (p === '/api/api-keys' && m === 'GET') { need('admin'); return json(await all(env, 'SELECT id, name, key_prefix, scopes, accounts, goship_accounts, otp_accounts, active, created_by, created_at, last_used_at FROM api_keys ORDER BY id DESC')); }
   if (p === '/api/api-keys' && m === 'POST') { need('admin'); return createApiKey(env, await body(request), user); }
   if ((mm = p.match(/^\/api\/api-keys\/(\d+)$/))) {
     need('admin');
@@ -111,6 +115,7 @@ async function handleApi(request, env, ctx, url) {
   }
 
   if (p.startsWith('/api/goship/')) return handleGoship(request, env, url, user, need);
+  if (p.startsWith('/api/esms/')) return handleEsms(request, env, url, user, need);
 
   if (p === '/api/summary' && m === 'GET') return summary(env, url, scope);
 
@@ -683,13 +688,14 @@ const sha256Hex = async (s) => toHex(await crypto.subtle.digest('SHA-256', enc.e
 async function createApiKey(env, b, user) {
   const name = String(b.name || '').trim();
   if (!name) throw new HttpError(400, 'Cần đặt tên cho API key (vd tên đối tác)');
-  const scopes = ['read', ...(b.write ? ['write'] : []), ...(b.goship ? ['goship'] : [])].join(',');
+  const scopes = ['read', ...(b.write ? ['write'] : []), ...(b.goship ? ['goship'] : []), ...(b.otp ? ['otp'] : [])].join(',');
+  const otpAccounts = b.otp && Array.isArray(b.otp_accounts) && b.otp_accounts.length ? b.otp_accounts.map((x) => String(Number(x))).join(',') : null;
   const accounts = Array.isArray(b.accounts) && b.accounts.length ? b.accounts.map(String).join(',') : null;
   const goshipAccounts = b.goship && Array.isArray(b.goship_accounts) && b.goship_accounts.length ? b.goship_accounts.map((x) => String(Number(x))).join(',') : null;
   const key = 'tc_' + toHex(crypto.getRandomValues(new Uint8Array(24)));
-  await run(env, 'INSERT INTO api_keys (name, key_prefix, key_hash, scopes, accounts, goship_accounts, created_by) VALUES (?,?,?,?,?,?,?)',
-    name, key.slice(0, 10), await sha256Hex(key), scopes, accounts, goshipAccounts, user.username);
-  return json({ key, name, scopes, accounts, goship_accounts: goshipAccounts, note: 'Key chỉ hiện một lần. Lưu lại ngay.' });
+  await run(env, 'INSERT INTO api_keys (name, key_prefix, key_hash, scopes, accounts, goship_accounts, otp_accounts, created_by) VALUES (?,?,?,?,?,?,?,?)',
+    name, key.slice(0, 10), await sha256Hex(key), scopes, accounts, goshipAccounts, otpAccounts, user.username);
+  return json({ key, name, scopes, accounts, goship_accounts: goshipAccounts, otp_accounts: otpAccounts, note: 'Key chỉ hiện một lần. Lưu lại ngay.' });
 }
 
 // ---------------------------------------------------------------- API v1 công khai (xem /docs)
@@ -740,6 +746,7 @@ async function handleV1(request, env, url) {
       return json({ status: 'success', data: await all(env, 'SELECT id, name, type FROM categories ORDER BY type, sort, name') });
     }
     if (p.startsWith('/goship/')) return await handleV1Goship(request, env, url, k, p.slice('/goship'.length), m);
+    if (p.startsWith('/otp/')) return await handleV1Otp(request, env, url, k, p.slice('/otp'.length), m);
     if (p === '/payment-requests' && m === 'POST') {
       if (!canWrite) return v1err(403, 'forbidden', 'API key này chỉ có quyền đọc');
       const b = await body(request);
@@ -845,6 +852,62 @@ async function handleV1Goship(request, env, url, k, p, m) {
     if (m === 'DELETE') return json({ status: 'success', data: gs.v1Shipment(await gs.gsCancel(env, s)) });
   }
   return v1err(404, 'not_found', 'Endpoint Goship không tồn tại. Xem tài liệu tại /docs#goship');
+}
+
+// ---------------------------------------------------------------- eSMS / OTP (giao diện)
+async function handleEsms(request, env, url, user, need) {
+  need('admin');
+  const p = url.pathname.slice('/api/esms'.length);
+  const m = request.method;
+  const q = url.searchParams;
+  let mm;
+  if (p === '/accounts' && m === 'GET') return json(await es.esmsAccountsView(env, url));
+  if (p === '/accounts' && m === 'POST') return es.saveEsmsAccount(env, await body(request), url);
+  if ((mm = p.match(/^\/accounts\/(\d+)(\/test)?$/))) {
+    if (!mm[2] && m === 'PUT') return es.saveEsmsAccount(env, { ...(await body(request)), id: Number(mm[1]) }, url);
+    if (mm[2] && m === 'POST') return json(await es.testEsmsAccount(env, Number(mm[1])));
+  }
+  if (p === '/otp' && m === 'GET') {
+    const r = await es.listOtp(env, Object.fromEntries(['account', 'phone', 'status', 'page', 'per_page'].map((k) => [k, q.get(k) || undefined])));
+    return json({ data: r.rows, total: r.total, page: r.page, per_page: r.per });
+  }
+  if (p === '/otp/send' && m === 'POST') {
+    const b = await body(request);
+    return json(await es.sendOtp(env, await es.pickEsms(env, b.account_id), b, { pepper: (await cfg(env)).sessionSecret, origin: url.origin, source: 'web:' + user.username, ip: request.headers.get('cf-connecting-ip') }), 201);
+  }
+  if (p === '/otp/verify' && m === 'POST') {
+    const b = await body(request);
+    return json(await es.verifyOtp(env, b.request_id, b.code, (await cfg(env)).sessionSecret));
+  }
+  throw new HttpError(404, 'Không tìm thấy');
+}
+
+// ---------------------------------------------------------------- OTP (API v1 cho bên thứ 3)
+async function handleV1Otp(request, env, url, k, p, m) {
+  if (!k.scopes.split(',').includes('otp')) return v1err(403, 'forbidden', 'API key này chưa được cấp quyền xác minh số điện thoại (OTP)');
+  const allowed = k.otp_accounts ? k.otp_accounts.split(',') : null;
+  const pepper = (await cfg(env)).sessionSecret;
+  let mm;
+  if (p === '/accounts' && m === 'GET') {
+    const list = (await all(env, 'SELECT * FROM esms_accounts WHERE active=1 ORDER BY id')).filter((a) => !allowed || allowed.includes(String(a.id)));
+    return json({ status: 'success', data: list.map((a) => ({ id: a.id, name: a.name, channels: es.channelsOf(a), default_channel: a.default_channel, otp_length: a.otp_length, otp_ttl: a.otp_ttl, sandbox: !!a.sandbox })) });
+  }
+  if (p === '/send' && m === 'POST') {
+    const b = await body(request);
+    const o = await es.sendOtp(env, await es.pickEsms(env, b.account_id, allowed), b, { pepper, origin: url.origin, source: 'api:' + k.name, apiKeyId: k.id, ip: request.headers.get('cf-connecting-ip') });
+    return json({ status: 'success', data: o }, 201);
+  }
+  if (p === '/verify' && m === 'POST') {
+    const b = await body(request);
+    if (!b.request_id || b.code === undefined) return v1err(400, 'invalid_request', 'Cần request_id và code');
+    return json({ status: 'success', data: await es.verifyOtp(env, b.request_id, b.code, pepper, k.id) });
+  }
+  if ((mm = p.match(/^\/(otp[a-f0-9]{32})$/)) && m === 'GET') {
+    const o = await first(env, `SELECT *, CASE WHEN status='sent' AND expires_at < datetime('now') THEN 'expired' ELSE status END status FROM otp_requests WHERE request_id=? AND api_key_id=?`, mm[1], k.id);
+    if (!o) return v1err(404, 'not_found', 'Không tìm thấy request_id');
+    return json({ status: 'success', data: es.otpView(o) });
+  }
+  return v1err(404, 'not_found', 'Endpoint OTP không tồn tại. Xem tài liệu tại /docs#otp');
 }
 
 function v1Txn(t) {

@@ -15,6 +15,8 @@ Webtool quản lý thu chi tự động: mọi giao dịch ngân hàng liên k�
 - **API cho bên thứ 3**: cấp/thu hồi API key (chỉ đọc hoặc thêm quyền tạo yêu cầu thu, giới hạn theo tài khoản ngân hàng). Tài liệu công khai tại `/docs`.
 - **Vận chuyển Goship**: nhiều tài khoản Goship (mỗi shop một Access Token, địa chỉ lấy hàng và URL webhook `/api/goship/webhook/<id>/<mã bí mật>`). Tra cước nhiều hãng, tạo, tra cứu, huỷ vận đơn; trạng thái tự cập nhật qua webhook Goship, có nút cập nhật tay.
 - **API Goship cho hệ thống khác**: API key có quyền Goship (giới hạn được theo tài khoản Goship) gọi `/api/v1/goship/*` để tra cước, tạo đơn (chống trùng theo `order_id`), theo dõi trạng thái và huỷ đơn.
+- **Xác minh số điện thoại qua eSMS**: nhiều tài khoản eSMS; sinh và kiểm tra mã OTP, gửi qua SMS brandname, Zalo ZNS hoặc Zalo rồi SMS (đa kênh). Chống spam (60 giây/lần, 5 mã/giờ mỗi số, 5 lần nhập sai), nhận callback trạng thái tới máy. Mã chỉ lưu dạng băm.
+- **API OTP cho hệ thống khác**: API key có quyền OTP gọi `/api/v1/otp/send` và `/api/v1/otp/verify`.
 - **Người dùng & phân quyền**: Quản trị / Biên tập / Chỉ xem; người “Chỉ xem” có thể giới hạn chỉ thấy một số tài khoản ngân hàng.
 
 ## Cài đặt và deploy
@@ -81,8 +83,9 @@ npm test
 ```
 src/index.js              Worker: webhook, API, đối soát (cron), phiên đăng nhập
 src/goship.js             Tích hợp Goship: tài khoản, cước, vận đơn, webhook
+src/esms.js               Tích hợp eSMS: tài khoản, gửi và kiểm tra OTP, callback
 src/lib.js                Tiện ích dùng chung
 public/index.html         Giao diện (HTML + JS thuần, không cần build)
-migrations/               Schema D1 (0001 khởi tạo … 0004 Goship)
+migrations/               Schema D1 (0001 khởi tạo … 0004 Goship, 0005 eSMS/OTP)
 test/                     Kiểm thử quy tắc phân loại, HMAC
 ```

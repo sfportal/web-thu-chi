@@ -71,6 +71,7 @@
     <button data-tab="cats">Danh mục &amp; quy tắc</button>
     <button data-tab="accts">Tài khoản</button>
     <button data-tab="goship" data-role="editor">Vận chuyển Goship</button>
+    <button data-tab="esms" data-role="admin">Xác minh SĐT (eSMS)</button>
     <button data-tab="sepay" data-role="admin">Kết nối SePay</button>
     <button data-tab="apikeys" data-role="admin">API &amp; tích hợp</button>
     <button data-tab="admin" data-role="admin">Quản trị</button>
@@ -219,6 +220,31 @@
     </div>
   </section>
 
+  <!-- eSMS -->
+  <section id="tab-esms" class="tab hidden">
+    <div class="card">
+      <h2>Xác minh số điện thoại qua eSMS</h2>
+      <p class="small">Hệ thống sinh mã OTP, gửi qua SMS brandname, Zalo ZNS, hoặc Zalo trước rồi tự chuyển SMS nếu Zalo lỗi, và tự kiểm tra mã khách nhập. Mỗi tài khoản eSMS có ApiKey, brandname và Zalo OA riêng. Phần mềm khác dùng qua API key có quyền <b>OTP</b> (tài liệu <a href="/docs#otp" target="_blank">/docs#otp</a>).</p>
+      <p class="small">Giới hạn chống spam: mỗi số tối đa 1 mã mỗi 60 giây và 5 mã mỗi giờ; mỗi mã nhập sai tối đa 5 lần.</p>
+      <div class="row"><button class="btn" id="esAdd">+ Thêm tài khoản eSMS</button></div>
+    </div>
+    <div id="esList"></div>
+    <div class="card">
+      <h2>Gửi thử mã</h2>
+      <div class="row"><select id="esTAcc"></select><select id="esTCh"></select><input id="esTPhone" placeholder="Số điện thoại" style="width:150px"><button class="btn" id="esTSend">Gửi mã</button>
+        <input id="esTCode" placeholder="Mã nhận được" style="width:120px"><button class="btn ghost" id="esTVerify" disabled>Kiểm tra mã</button></div>
+      <div class="small" id="esTMsg" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>Lịch sử gửi mã</h2>
+      <div class="filters"><select id="esFAcc"></select><input id="esFPhone" placeholder="Số điện thoại" style="width:150px">
+        <select id="esFSt"><option value="">Mọi trạng thái</option><option value="sent">Đã gửi</option><option value="verified">Đã xác minh</option><option value="failed">Gửi lỗi</option><option value="expired">Hết hạn</option><option value="locked">Khoá</option></select>
+        <button class="btn ghost" id="esFGo">Lọc</button></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Lúc (UTC)</th><th>Số điện thoại</th><th>Tài khoản</th><th>Kênh</th><th>Trạng thái</th><th>Tới máy</th><th class="r">Lần nhập</th><th>Mục đích</th><th>Nguồn</th></tr></thead><tbody id="esBody"></tbody></table></div>
+      <div class="pager"><span class="small" id="esInfo"></span><button class="btn ghost" id="esPrev">‹</button><button class="btn ghost" id="esNext">›</button></div>
+    </div>
+  </section>
+
   <!-- Kết nối SePay -->
   <section id="tab-sepay" class="tab hidden">
     <div class="card">
@@ -248,6 +274,8 @@
         <label>Tài khoản được xem</label><div id="kAccts" class="row"></div>
         <label>Goship</label><label><input type="checkbox" name="goship" id="kGs"> Cho phép tra cước, tạo, tra cứu và huỷ vận đơn Goship</label>
         <label class="kGsRow hidden">Tài khoản Goship</label><div id="kGsAccts" class="row kGsRow hidden"></div>
+        <label>Xác minh SĐT</label><label><input type="checkbox" name="otp" id="kOtp"> Cho phép gửi và kiểm tra mã OTP qua eSMS (SMS/Zalo)</label>
+        <label class="kOtpRow hidden">Tài khoản eSMS</label><div id="kOtpAccts" class="row kOtpRow hidden"></div>
         <span></span><button class="btn">Tạo API key</button>
       </form>
       <div id="kNew" class="hidden" style="margin-top:12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:12px"></div>
@@ -344,7 +372,7 @@ $$('#nav button').forEach((b) => b.onclick = () => show(b.dataset.tab));
 function show(tab) {
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $$('.tab').forEach((t) => t.classList.toggle('hidden', t.id !== 'tab-' + tab));
-  ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, goship:loadGoship, sepay:loadSepay, apikeys:loadKeys, admin:loadAdmin })[tab]();
+  ({ dash:loadDash, txns:loadTxns, collect:loadCollect, cats:loadCats, accts:loadAccts, goship:loadGoship, esms:loadEsms, sepay:loadSepay, apikeys:loadKeys, admin:loadAdmin })[tab]();
 }
 function catOptions(type, withAll) {
   const list = cats.filter((c) => !type || c.type === type);
@@ -775,6 +803,97 @@ $('#gsNew').onclick = () => {
   };
 };
 
+// ---------------------------------------------------------------- eSMS / OTP
+let esAccts = [], esPage = 1, esLastRid = null;
+const ES_CH = { sms:'SMS', zalo:'Zalo ZNS', zalo_sms:'Zalo, lỗi thì SMS' };
+const ES_ST = { sent:['Đã gửi', '#2563eb'], verified:['Đã xác minh', 'var(--in)'], failed:['Gửi lỗi', 'var(--out)'], expired:['Hết hạn', '#94a3b8'], locked:['Khoá (sai nhiều lần)', '#d97706'] };
+async function loadEsms() {
+  esAccts = await api('/esms/accounts');
+  renderEsAccounts();
+  $('#esTAcc').innerHTML = esAccts.filter((a) => a.active).map((a) => `<option value="${a.id}">${esc(a.name)}${a.sandbox ? ' (Sandbox)' : ''}</option>`).join('');
+  const fillCh = () => { const a = esAccts.find((x) => x.id == $('#esTAcc').value); $('#esTCh').innerHTML = (a?.channels || []).map((c) => `<option value="${c}" ${a.default_channel === c ? 'selected' : ''}>${ES_CH[c]}</option>`).join('') || '<option value="">Chưa cấu hình kênh</option>'; };
+  $('#esTAcc').onchange = fillCh; fillCh();
+  $('#esFAcc').innerHTML = '<option value="">Mọi tài khoản</option>' + esAccts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  loadOtpLog();
+}
+async function loadOtpLog() {
+  const r = await api('/esms/otp?' + new URLSearchParams({ account:$('#esFAcc').value, phone:$('#esFPhone').value, status:$('#esFSt').value, page:esPage }));
+  $('#esBody').innerHTML = r.data.map((o) => `<tr><td class="small">${esc(o.created_at)}</td><td>${esc(o.phone)}</td><td class="small">${esc(o.account_name || '')}</td><td class="small">${ES_CH[o.channel] || o.channel}</td>
+    <td><span class="pill" style="background:${(ES_ST[o.status] || ['', '#64748b'])[1]}">${(ES_ST[o.status] || [o.status])[0]}</span>${o.send_error ? `<div class="small out">${esc(o.send_error)}</div>` : ''}</td>
+    <td class="small">${o.delivery === 'delivered' ? '<span class="in">Đã tới máy</span>' : o.delivery === 'failed' ? `<span class="out">Không tới máy</span> ${esc(o.delivery_info || '')}` : '–'}</td>
+    <td class="r">${o.attempts}</td><td class="small">${esc(o.purpose || '')}</td><td class="small">${esc(o.source || '')}</td></tr>`).join('') || '<tr><td colspan="9" class="small">Chưa gửi mã nào</td></tr>';
+  $('#esInfo').textContent = `${r.total} lượt · trang ${r.page}/${Math.max(1, Math.ceil(r.total / r.per_page))}`;
+  $('#esPrev').disabled = r.page <= 1; $('#esNext').disabled = r.page * r.per_page >= r.total;
+}
+$('#esFGo').onclick = () => { esPage = 1; loadOtpLog(); };
+$('#esPrev').onclick = () => { esPage--; loadOtpLog(); };
+$('#esNext').onclick = () => { esPage++; loadOtpLog(); };
+$('#esTSend').onclick = async () => {
+  if (!$('#esTAcc').value) return toast('Chưa có tài khoản eSMS hoạt động');
+  $('#esTMsg').textContent = 'Đang gửi…';
+  try {
+    const o = await api('/esms/otp/send', { method:'POST', body:{ account_id:Number($('#esTAcc').value), phone:$('#esTPhone').value, channel:$('#esTCh').value, purpose:'Thử từ trang quản trị' } });
+    esLastRid = o.request_id; $('#esTVerify').disabled = false;
+    $('#esTMsg').innerHTML = `<b class="in">Đã gửi mã tới ${esc(o.phone_masked)} qua ${ES_CH[o.channel]}, hết hạn lúc ${esc(o.expires_at)} UTC.</b>`; loadOtpLog();
+  } catch (e) { $('#esTMsg').innerHTML = `<b class="out">${esc(e.message)}</b>`; loadOtpLog(); }
+};
+$('#esTVerify').onclick = async () => {
+  if (!esLastRid) return;
+  const r = await api('/esms/otp/verify', { method:'POST', body:{ request_id:esLastRid, code:$('#esTCode').value } });
+  $('#esTMsg').innerHTML = `<b class="${r.verified ? 'in' : 'out'}">${esc(r.message)}</b>`; loadOtpLog();
+};
+function renderEsAccounts() {
+  $('#esList').innerHTML = esAccts.map((a) => `<div class="card" data-es="${a.id}" style="${a.active ? '' : 'opacity:.6'}">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(a.name)} <span class="small">#${a.id} · ${a.otp_24h} mã trong 24 giờ</span></h2>
+      <div class="row">${a.sandbox ? badge(false, 'Sandbox: không gửi thật, không tính phí') : badge(true, 'Gửi thật')}${badge(a.api_key_set && a.secret_key_set, a.api_key_set ? 'Có ApiKey' : 'Chưa có ApiKey')}
+      ${badge(a.channels.includes('sms'), a.channels.includes('sms') ? 'SMS sẵn sàng' : 'Chưa cấu hình SMS')}${badge(a.channels.includes('zalo'), a.channels.includes('zalo') ? 'Zalo sẵn sàng' : 'Chưa cấu hình Zalo')}
+      ${a.last_balance != null ? `<span class="pill" style="background:#0f766e">Số dư ${fmt(a.last_balance)}đ</span>` : ''}${a.active ? '' : '<span class="pill" style="background:#94a3b8">Đang ngưng</span>'}</div></div>
+    <div class="form" style="max-width:none;grid-template-columns:170px 1fr;margin-top:12px">
+      <label>Tên</label><input data-f="name" value="${esc(a.name)}" style="max-width:320px">
+      <label>ApiKey</label><input data-f="api_key" type="password" autocomplete="off" placeholder="${a.api_key_set ? 'Đang lưu ' + esc(a.api_key_hint) + ', để trống nếu không đổi' : 'account.esms.vn → Quản lý API'}">
+      <label>SecretKey</label><input data-f="secret_key" type="password" autocomplete="off" placeholder="${a.secret_key_set ? 'Đang lưu ' + esc(a.secret_key_hint) + ', để trống nếu không đổi' : 'Dán SecretKey'}">
+      <label>Brandname SMS</label><input data-f="brandname" value="${esc(a.brandname || '')}" placeholder="Tên thương hiệu đã đăng ký với eSMS" style="max-width:320px">
+      <label>Nội dung SMS</label><input data-f="sms_template" value="${esc(a.sms_template || '')}" placeholder="Đúng mẫu đã đăng ký, {code} là chỗ điền mã. VD: {code} la ma xac minh cua ban">
+      <label>Zalo OA ID</label><input data-f="zalo_oaid" value="${esc(a.zalo_oaid || '')}" style="max-width:320px">
+      <label>Template ZNS · tham số</label><div class="row"><input data-f="zalo_temp_id" value="${esc(a.zalo_temp_id || '')}" placeholder="Template ID" style="width:160px"><input data-f="zalo_param" value="${esc(a.zalo_param || 'otp')}" placeholder="otp" style="width:120px"><span class="small">tên biến chứa mã trong template</span></div>
+      <label>Kênh mặc định</label><select data-f="default_channel" style="max-width:320px">${Object.entries(ES_CH).map(([k, v]) => `<option value="${k}" ${a.default_channel === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <label>Mã OTP</label><div class="row"><input data-f="otp_length" type="number" min="4" max="8" value="${a.otp_length}" style="width:80px"><span class="small">số</span><input data-f="otp_ttl" type="number" min="60" max="1800" value="${a.otp_ttl}" style="width:100px"><span class="small">giây hiệu lực</span></div>
+      <label>Chế độ</label><label><input type="checkbox" data-f="sandbox" ${a.sandbox ? 'checked' : ''}> Sandbox (eSMS nhận request nhưng không gửi tin, không trừ tiền)</label>
+      <label>URL callback</label><div class="row"><code style="word-break:break-all">${esc(a.callback_url)}</code><span class="small">tự gửi kèm mỗi tin, không cần khai báo</span></div>
+      <label>Kiểm tra gần nhất</label><div class="small">${esc(a.last_check_at || 'Chưa kiểm tra')} ${a.last_error ? '<span class="out">· ' + esc(a.last_error) + '</span>' : ''}</div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn" data-save>Lưu</button><button class="btn ghost" data-test>Kiểm tra số dư</button>
+      <button class="btn ${a.active ? 'danger' : 'ghost'}" data-toggle>${a.active ? 'Ngưng' : 'Bật lại'}</button><span class="small" data-msg></span></div></div>`).join('') || '<div class="card small">Chưa có tài khoản eSMS nào. Bấm “+ Thêm tài khoản eSMS”.</div>';
+  for (const card of $$('#esList [data-es]')) {
+    const id = card.dataset.es, a = esAccts.find((x) => x.id == id), msg = $('[data-msg]', card);
+    $('[data-save]', card).onclick = async () => {
+      const b = {};
+      $$('[data-f]', card).forEach((el) => { if (el.type === 'checkbox') b[el.dataset.f] = el.checked; else if (el.value !== '' || el.tagName === 'SELECT' || !['api_key', 'secret_key'].includes(el.dataset.f)) b[el.dataset.f] = el.value; });
+      esAccts = await api('/esms/accounts/' + id, { method:'PUT', body:b }); toast('Đã lưu tài khoản eSMS'); loadEsms();
+    };
+    $('[data-test]', card).onclick = async () => { msg.textContent = 'Đang kiểm tra…'; const r = await api(`/esms/accounts/${id}/test`, { method:'POST' }); msg.innerHTML = `<b class="${r.ok ? 'in' : 'out'}">${esc(r.message)}</b>`; if (r.ok) loadEsms(); };
+    $('[data-toggle]', card).onclick = async () => {
+      if (a.active && !confirm(`Ngưng tài khoản eSMS "${a.name}"? Hệ thống và đối tác sẽ không gửi mã qua tài khoản này nữa.`)) return;
+      esAccts = await api('/esms/accounts/' + id, { method:'PUT', body:{ active: a.active ? 0 : 1 } }); loadEsms();
+    };
+  }
+}
+$('#esAdd').onclick = () => {
+  const d = $('#dlg');
+  d.innerHTML = `<h2 style="margin-top:0">Thêm tài khoản eSMS</h2><form class="form" id="esf">
+    <label>Tên</label><input name="name" required placeholder="VD: eSMS BVI, eSMS FarmBase">
+    <label>ApiKey</label><input name="api_key" type="password" autocomplete="off">
+    <label>SecretKey</label><input name="secret_key" type="password" autocomplete="off">
+    <span></span><div class="row"><button class="btn">Tạo</button><button class="btn ghost" type="button" id="esfC">Huỷ</button></div></form>
+    <p class="small">Sau khi tạo: điền Brandname và nội dung SMS đã đăng ký, hoặc Zalo OA ID và Template ZNS, rồi bấm Kiểm tra số dư.</p>`;
+  d.showModal();
+  $('#esfC').onclick = () => d.close();
+  $('#esf').onsubmit = async (e) => {
+    e.preventDefault(); const b = Object.fromEntries(new FormData(e.target)); for (const k of ['api_key', 'secret_key']) if (!b[k]) delete b[k];
+    b.sandbox = 1; esAccts = await api('/esms/accounts', { method:'POST', body:b }); d.close(); toast('Đã tạo, đang ở chế độ Sandbox'); loadEsms();
+  };
+};
+
 // ---------------------------------------------------------------- API key
 function acctChecks(selected = []) {
   return accounts.map((a) => `<label class="small" style="white-space:nowrap"><input type="checkbox" value="${esc(a.account_number)}" ${selected.includes(a.account_number) ? 'checked' : ''}> ${esc(a.bank || '')} ${esc(a.account_number)}</label>`).join(' ') || '<span class="small">Chưa có tài khoản ngân hàng</span>';
@@ -785,9 +904,12 @@ async function loadKeys() {
   const gal = await api('/goship/accounts').catch(() => []);
   $('#kGsAccts').innerHTML = gal.map((a) => `<label class="small" style="white-space:nowrap"><input type="checkbox" value="${a.id}"> #${a.id} ${esc(a.name)}</label>`).join(' ') + '<span class="small">Không chọn = mọi tài khoản Goship</span>';
   $('#kGs').onchange = () => $$('.kGsRow').forEach((el) => el.classList.toggle('hidden', !$('#kGs').checked));
+  const eal = await api('/esms/accounts').catch(() => []);
+  $('#kOtpAccts').innerHTML = eal.map((a) => `<label class="small" style="white-space:nowrap"><input type="checkbox" value="${a.id}"> #${a.id} ${esc(a.name)}</label>`).join(' ') + '<span class="small">Không chọn = mọi tài khoản eSMS</span>';
+  $('#kOtp').onchange = () => $$('.kOtpRow').forEach((el) => el.classList.toggle('hidden', !$('#kOtp').checked));
   $('#docsLink').textContent = location.origin + '/docs';
   const keys = await api('/api-keys');
-  $('#kBody').innerHTML = keys.map((k) => `<tr><td>${esc(k.name)}</td><td><code>${esc(k.key_prefix)}…</code></td><td>${k.scopes.includes('write') ? 'Đọc + tạo yêu cầu thu' : 'Chỉ đọc'}${k.scopes.includes('goship') ? '<br><span class="small">+ Goship' + (k.goship_accounts ? ' (TK #' + esc(k.goship_accounts.split(',').join(', #')) + ')' : ' (mọi TK)') + '</span>' : ''}</td>
+  $('#kBody').innerHTML = keys.map((k) => `<tr><td>${esc(k.name)}</td><td><code>${esc(k.key_prefix)}…</code></td><td>${k.scopes.includes('write') ? 'Đọc + tạo yêu cầu thu' : 'Chỉ đọc'}${k.scopes.includes('goship') ? '<br><span class="small">+ Goship' + (k.goship_accounts ? ' (TK #' + esc(k.goship_accounts.split(',').join(', #')) + ')' : ' (mọi TK)') + '</span>' : ''}${k.scopes.includes('otp') ? '<br><span class="small">+ OTP' + (k.otp_accounts ? ' (eSMS #' + esc(k.otp_accounts.split(',').join(', #')) + ')' : ' (mọi TK eSMS)') + '</span>' : ''}</td>
     <td class="small">${esc(k.accounts ? k.accounts.split(',').join(', ') : 'Tất cả')}</td><td class="small">${esc(k.created_at)}</td><td class="small">${esc(k.last_used_at || 'Chưa dùng')}</td>
     <td>${k.active ? '<span class="pill" style="background:var(--in)">Hoạt động</span>' : '<span class="pill" style="background:#94a3b8">Đã thu hồi</span>'}</td>
     <td>${k.active ? `<button class="btn danger" data-krevoke="${k.id}">Thu hồi</button>` : `<button class="btn ghost" data-kdel="${k.id}">Xoá</button>`}</td></tr>`).join('') || '<tr><td colspan="8" class="small">Chưa cấp API key nào</td></tr>';
@@ -797,12 +919,12 @@ async function loadKeys() {
 $('#kForm').onsubmit = async (e) => {
   e.preventDefault();
   const f = e.target;
-  const r = await api('/api-keys', { method:'POST', body:{ name:f.name.value, write:f.write.checked, accounts:$$('#kAccts input:checked').map((i) => i.value), goship:f.goship.checked, goship_accounts:$$('#kGsAccts input:checked').map((i) => i.value) } });
+  const r = await api('/api-keys', { method:'POST', body:{ name:f.name.value, write:f.write.checked, accounts:$$('#kAccts input:checked').map((i) => i.value), goship:f.goship.checked, goship_accounts:$$('#kGsAccts input:checked').map((i) => i.value), otp:f.otp.checked, otp_accounts:$$('#kOtpAccts input:checked').map((i) => i.value) } });
   $('#kNew').classList.remove('hidden');
   $('#kNew').innerHTML = `<b>API key cho ${esc(r.name)}</b> (chỉ hiện một lần, hãy sao chép ngay):<div class="row" style="margin-top:6px"><code id="kVal" style="word-break:break-all">${esc(r.key)}</code><button class="btn ghost" type="button" id="kCopy">Sao chép</button></div>
     <p class="small">Gửi cho đối tác kèm tài liệu: ${esc(location.origin)}/docs</p>`;
   $('#kCopy').onclick = () => copy(r.key);
-  f.reset(); $$('.kGsRow').forEach((el) => el.classList.add('hidden')); loadKeys();
+  f.reset(); $$('.kGsRow,.kOtpRow').forEach((el) => el.classList.add('hidden')); loadKeys();
 };
 
 // ---------------------------------------------------------------- quản trị
